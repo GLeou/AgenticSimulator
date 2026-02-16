@@ -1,0 +1,22 @@
+{
+  "computingNodes": [
+    {
+      "node_id": 1,
+      "cores": 4,
+      "frequency": 3000000000.0,
+      "bandwidth": 1000000000.0
+    },
+    {
+      "node_id": 2,
+      "cores": 1,
+      "frequency": 1000000000.0,
+      "bandwidth": 1000000000.0
+    },
+    {
+      "node_id": 3,
+      "cores": 2,
+      "frequency": 2000000000.0,
+      "bandwidth": 1000000000.0
+    }
+  ]
+}

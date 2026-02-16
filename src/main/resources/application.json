@@ -1,0 +1,31 @@
+{
+  "services": [
+    {
+      "service_id": 1,
+      "totalInstructions": 6000000000,
+      "nodeId": 1
+    },
+    {
+      "service_id": 2,
+      "totalInstructions": 5000000000,
+      "nodeId": 2
+    },
+    {
+      "service_id": 3,
+      "totalInstructions": 4000000000,
+      "nodeId": 3
+    }
+  ],
+  "serviceCalls": [
+    {
+      "callerId": 1,
+      "calleeId": 2,
+      "bytes": 200000000
+    },
+    {
+      "callerId": 2,
+      "calleeId": 3,
+      "bytes": 200000000
+    }
+  ]
+}
