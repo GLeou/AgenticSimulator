@@ -5,6 +5,8 @@ import com.thesis.simulator.agentic.events.AgenticEvent;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.scheduler.EventScheduler;
 
+import lombok.RequiredArgsConstructor;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -12,18 +14,13 @@ import java.util.Map;
  * Entry point for tasks. Kicks off the first message and dispatches
  * subsequent events to the right agent.
  */
+@RequiredArgsConstructor
 public class Orchestrator {
 
     private final Topology topology;
     private final Map<String, AgentService> agents = new HashMap<>();
     private final EventScheduler scheduler;
     private final TrajectoryCollector trace;
-
-    public Orchestrator(Topology topology, EventScheduler scheduler, TrajectoryCollector trace) {
-        this.topology = topology;
-        this.scheduler = scheduler;
-        this.trace = trace;
-    }
 
     public void registerAgent(String agentId, AgentService service) {
         agents.put(agentId, service);

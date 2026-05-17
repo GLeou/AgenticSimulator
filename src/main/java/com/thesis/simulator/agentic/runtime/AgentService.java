@@ -12,6 +12,8 @@ import com.thesis.simulator.agentic.events.AgenticEvent;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.scheduler.EventScheduler;
 
+import lombok.RequiredArgsConstructor;
+
 import java.util.*;
 
 /**
@@ -22,6 +24,7 @@ import java.util.*;
  * incoming requests wait in a FIFO queue and are dequeued when capacity frees up.
  * This models real-world container thread pools (like Tomcat/Jetty in v1 Pods).
  */
+@RequiredArgsConstructor
 public class AgentService {
 
     private final AgentDefinition def;
@@ -37,16 +40,6 @@ public class AgentService {
 
     /** Per-workflow ephemeral session. */
     private final Map<String, WorkflowContext> contexts = new HashMap<>();
-
-    public AgentService(AgentDefinition def, Topology topology, LLMEngine llm,
-                        ToolPool tools, EventScheduler scheduler, TrajectoryCollector trace) {
-        this.def = def;
-        this.topology = topology;
-        this.llm = llm;
-        this.tools = tools;
-        this.scheduler = scheduler;
-        this.trace = trace;
-    }
 
     /**
      * Step 1 + 2: receive message, check concurrency, build context, kick off LLM call.
@@ -217,6 +210,7 @@ public class AgentService {
     }
 
     /** Per-workflow ephemeral session. */
+    @RequiredArgsConstructor
     private static class WorkflowContext {
         final String workflowId;
         final double startedAtMs;
@@ -224,10 +218,5 @@ public class AgentService {
         int accumulatedInputTokens = 0;
         int accumulatedOutputTokens = 0;
         double totalCostUsd = 0.0;
-
-        WorkflowContext(String workflowId, double startedAtMs) {
-            this.workflowId = workflowId;
-            this.startedAtMs = startedAtMs;
-        }
     }
 }

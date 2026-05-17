@@ -2,6 +2,8 @@ package com.thesis.simulator.agentic.engine;
 
 import com.thesis.simulator.agentic.config.AgenticConfig.LLMProfile;
 
+import lombok.RequiredArgsConstructor;
+
 import java.util.List;
 import java.util.Random;
 import java.util.function.BiFunction;
@@ -18,15 +20,11 @@ import java.util.function.BiFunction;
  * Decision model: pluggable BiFunction policy. Use a scripted policy for
  * deterministic debugging, swap to weighted-random for experiments.
  */
+@RequiredArgsConstructor
 public class LLMEngine {
 
     private final Random rng;
     private final BiFunction<Integer, List<String>, AgentDecision> decisionPolicy;
-
-    public LLMEngine(long seed, BiFunction<Integer, List<String>, AgentDecision> decisionPolicy) {
-        this.rng = new Random(seed);
-        this.decisionPolicy = decisionPolicy;
-    }
 
     /** Sample inference latency in ms: TTFT + output_tokens × TPOT. */
     public double sampleLatencyMs(LLMProfile profile, int outputTokens) {

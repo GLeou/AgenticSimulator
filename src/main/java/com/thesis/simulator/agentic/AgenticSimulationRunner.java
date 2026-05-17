@@ -52,7 +52,7 @@ public class AgenticSimulationRunner {
         // Get available tool IDs for CALL_TOOL decisions
         List<String> allToolIds = new ArrayList<>(topology.tools().keySet());
 
-        LLMEngine llm = new LLMEngine(seed, (inputTokens, availableTools) -> {
+        LLMEngine llm = new LLMEngine(new Random(seed), (inputTokens, availableTools) -> {
             LLMProfile profile = topology.llmProfiles().values().iterator().next();
             int outTokens = Math.max(1, (int) Math.round(
                     profile.outputTokensMean() + rng.nextGaussian() * profile.outputTokensStd()));
@@ -78,7 +78,7 @@ public class AgenticSimulationRunner {
             return AgentDecision.text(outTokens);
         });
 
-        ToolPool tools = new ToolPool(topology.tools(), seed + 1);
+        ToolPool tools = new ToolPool(topology.tools(), new Random(seed + 1));
 
         // --- Wire components ---
         EventScheduler scheduler = new EventScheduler();

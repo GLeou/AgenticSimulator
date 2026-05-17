@@ -1,0 +1,65 @@
+{
+  "nodes": [
+    {
+      "nodeId": 1,
+      "zone": "CLOUD",
+      "cores": 8,
+      "frequencyHz": 3000000000.0,
+      "vramGB": 80,
+      "bandwidthBytesPerSec": 1250000000.0
+    }
+  ],
+  "zonePairLatencies": [
+    { "from": "CLOUD", "to": "CLOUD", "latencyMs": 1.0 }
+  ],
+  "agentServices": [
+    {
+      "serviceId": "agent-1",
+      "nodeId": 1,
+      "modelId": "gpt-4o",
+      "maxConcurrency": 10,
+      "hostZone": "CLOUD",
+      "systemPromptTokens": 500,
+      "toolSchemaTokens": 200
+    }
+  ],
+  "llmModels": [
+    {
+      "modelId": "gpt-4o",
+      "ttftMeanMs": 400.0,
+      "ttftGammaShape": 4.0,
+      "tpotMeanMs": 25.0,
+      "tpotGammaShape": 10.0,
+      "outputTokensMean": 150.0,
+      "outputTokensStdDev": 50.0,
+      "costPerInputToken": 0.0000025,
+      "costPerOutputToken": 0.00001,
+      "hostZone": "CLOUD",
+      "decisionWeights": {
+        "generate_text": 0.4,
+        "call_tool": 0.6
+      }
+    }
+  ],
+  "tools": [
+    {
+      "toolId": "search-tool",
+      "nodeId": 1,
+      "latencyMeanMs": 200.0,
+      "latencyStdDevMs": 50.0,
+      "resultTokensMean": 300,
+      "resultTokensStdDev": 100.0,
+      "errorRate": 0.0,
+      "hostZone": "CLOUD"
+    }
+  ],
+  "simulation": {
+    "durationSeconds": 100.0,
+    "arrivalRate": 0.5,
+    "userMessageTokensMean": 50.0,
+    "userMessageTokensStdDev": 20.0,
+    "maxStepsPerWorkflow": 10,
+    "maxTokensPerWorkflow": 10000,
+    "seed": 42
+  }
+}

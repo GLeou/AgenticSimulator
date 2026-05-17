@@ -2,6 +2,8 @@ package com.thesis.simulator.agentic.engine;
 
 import com.thesis.simulator.agentic.config.AgenticConfig.ToolProfile;
 
+import lombok.RequiredArgsConstructor;
+
 import java.util.Map;
 import java.util.Random;
 
@@ -9,15 +11,11 @@ import java.util.Random;
  * Stochastic surrogate for external tools / MCP-exposed functions.
  * Samples (latency, response_tokens, error_flag).
  */
+@RequiredArgsConstructor
 public class ToolPool {
 
     private final Map<String, ToolProfile> tools;
     private final Random rng;
-
-    public ToolPool(Map<String, ToolProfile> tools, long seed) {
-        this.tools = tools;
-        this.rng = new Random(seed);
-    }
 
     public ToolProfile getProfile(String toolId) {
         ToolProfile p = tools.get(toolId);

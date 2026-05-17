@@ -26,16 +26,12 @@ public class Simulation {
     // ==========================================
 
     // Simple container to record "At Time X, Pod Y had Z people waiting"
+    @lombok.Data
+    @lombok.AllArgsConstructor
     static class QueueLog {
-        double time;
-        String podName;
-        int size;
-
-        public QueueLog(double time, String podName, int size) {
-            this.time = time;
-            this.podName = podName;
-            this.size = size;
-        }
+        private double time;
+        private String podName;
+        private int size;
 
         public String toCSV() {
             // US Locale ensures dot (.) is used for decimals, not comma
@@ -44,25 +40,22 @@ public class Simulation {
     }
 
     // Represents a single running instance (Replica) of a Service
+    @lombok.Getter
+    @lombok.Setter
+    @lombok.RequiredArgsConstructor
     static class Pod {
-        int id;
-        int serviceId;
-        int nodeId;
+        private final int id;
+        private final int serviceId;
+        private final int nodeId;
 
         // --- CONCURRENCY LOGIC ---
         // Instead of a boolean isBusy, we use a counter.
         // This mimics a Thread Pool (e.g., Tomcat, Jetty).
-        int activeRequests = 0;
-        int maxConcurrency = 10; // The Pod can handle 10 requests at once before queuing.
+        private int activeRequests = 0;
+        private int maxConcurrency = 10; // The Pod can handle 10 requests at once before queuing.
 
         // The "Waiting Room" for this specific Pod
-        Queue<RequestState> requestQueue = new LinkedList<>();
-
-        public Pod(int id, int serviceId, int nodeId) {
-            this.id = id;
-            this.serviceId = serviceId;
-            this.nodeId = nodeId;
-        }
+        private Queue<RequestState> requestQueue = new LinkedList<>();
 
         // Returns TRUE if we have an open thread slot
         public boolean hasCapacity() {
@@ -112,18 +105,13 @@ public class Simulation {
 
     enum EventType { ARRIVAL, POD_FINISH, NETWORK_FINISH }
 
+    @lombok.Data
+    @lombok.AllArgsConstructor
     static class SimEvent implements Comparable<SimEvent> {
-        double time;      // When will this happen?
-        EventType type;   // What is happening?
-        RequestState request;
-        Pod pod;
-
-        public SimEvent(double time, EventType type, RequestState request, Pod pod) {
-            this.time = time;
-            this.type = type;
-            this.request = request;
-            this.pod = pod;
-        }
+        private double time;      // When will this happen?
+        private EventType type;   // What is happening?
+        private RequestState request;
+        private Pod pod;
 
         // This ensures the PriorityQueue always gives us the EARLIEST event next.
         @Override
