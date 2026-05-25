@@ -49,14 +49,19 @@ public final class AgenticConfig {
             String hostZone
     ) {}
 
-    /** An agent definition: which LLM, which tools, which zone. */
+    /** Physical/virtual infrastructure node. */
+    public record InfraNode(int nodeId, String zone, int cores, double frequencyHz, double bandwidthBytesPerSec) {}
+
+    /** An agent definition: which LLM, which tools, which zone, and infra properties. */
     public record AgentDefinition(
             String id,
             String llmProfileId,
             List<String> toolIds,
             String hostZone,
             int maxConcurrency,
-            double coldStartMs
+            double coldStartMs,
+            long instructionsPerStep,
+            int replicas
     ) {}
 
     /** The whole configuration loaded from disk for one experiment. */
@@ -66,6 +71,7 @@ public final class AgenticConfig {
             Map<String, LLMProfile> llmProfiles,
             Map<String, ToolProfile> tools,
             Map<String, AgentDefinition> agents,
+            List<InfraNode> infraNodes,
             WorkflowSpec workflow
     ) {}
 

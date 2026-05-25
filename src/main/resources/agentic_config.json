@@ -20,7 +20,9 @@
       "maxConcurrency": 10,
       "hostZone": "CLOUD",
       "systemPromptTokens": 500,
-      "toolSchemaTokens": 200
+      "toolSchemaTokens": 200,
+      "instructionsPerStep": 50000000,
+      "replicas": 2
     }
   ],
   "llmModels": [

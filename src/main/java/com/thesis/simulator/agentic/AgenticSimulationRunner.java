@@ -7,6 +7,7 @@ import com.thesis.simulator.agentic.engine.AgentDecision;
 import com.thesis.simulator.agentic.engine.LLMEngine;
 import com.thesis.simulator.agentic.engine.ToolPool;
 import com.thesis.simulator.agentic.events.AgenticEvent;
+import com.thesis.simulator.agentic.infra.InfrastructureLayer;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.runtime.AgentService;
 import com.thesis.simulator.agentic.runtime.Orchestrator;
@@ -85,10 +86,14 @@ public class AgenticSimulationRunner {
         TrajectoryCollector trace = new TrajectoryCollector();
         Orchestrator orchestrator = new Orchestrator(topology, scheduler, trace);
 
+        // Build infrastructure layer from node specs
+        InfrastructureLayer infraLayer = new InfrastructureLayer(
+                topology.infraNodes(), topology.agents());
+
         // Register all agents
         for (Map.Entry<String, AgentDefinition> entry : topology.agents().entrySet()) {
             AgentService agent = new AgentService(
-                    entry.getValue(), topology, llm, tools, scheduler, trace);
+                    entry.getValue(), topology, llm, tools, scheduler, trace, infraLayer);
             orchestrator.registerAgent(entry.getKey(), agent);
         }
 
@@ -133,10 +138,17 @@ public class AgenticSimulationRunner {
     // ==========================================
 
     private Topology parseTopology(JsonNode root) {
-        // Zones
+        // Zones + InfraNodes
         List<Zone> zones = new ArrayList<>();
+        List<InfraNode> infraNodes = new ArrayList<>();
         for (JsonNode n : root.get("nodes")) {
             zones.add(new Zone(n.get("zone").asText()));
+            infraNodes.add(new InfraNode(
+                    n.get("nodeId").asInt(),
+                    n.get("zone").asText(),
+                    n.get("cores").asInt(),
+                    n.get("frequencyHz").asDouble(),
+                    n.has("bandwidthBytesPerSec") ? n.get("bandwidthBytesPerSec").asDouble() : 1_250_000_000.0));
         }
         // Deduplicate zones
         zones = zones.stream().distinct().toList();
@@ -195,7 +207,9 @@ public class AgenticSimulationRunner {
                     a.has("hostZone") ? a.get("hostZone").asText()
                             : root.get("nodes").get(a.get("nodeId").asInt() - 1).get("zone").asText(),
                     a.get("maxConcurrency").asInt(),
-                    a.has("coldStartMs") ? a.get("coldStartMs").asDouble() : 0.0));
+                    a.has("coldStartMs") ? a.get("coldStartMs").asDouble() : 0.0,
+                    a.has("instructionsPerStep") ? a.get("instructionsPerStep").asLong() : 50_000_000L,
+                    a.has("replicas") ? a.get("replicas").asInt() : 1));
         }
 
         // Workflow spec
@@ -207,7 +221,7 @@ public class AgenticSimulationRunner {
                 simNode.get("maxStepsPerWorkflow").asInt(),
                 simNode.get("maxTokensPerWorkflow").asInt());
 
-        return new Topology(zones, links, llmProfiles, toolProfiles, agents, workflow);
+        return new Topology(zones, links, llmProfiles, toolProfiles, agents, infraNodes, workflow);
     }
 
     // ==========================================
@@ -218,9 +232,13 @@ public class AgenticSimulationRunner {
                              double durationMs, double arrivalRate) {
         System.out.println("--- Configuration ---");
         System.out.println("Zones: " + topology.zones().stream().map(Zone::id).toList());
+        topology.infraNodes().forEach(n ->
+                System.out.printf("  Node %d | zone=%s | cores=%d | freq=%.0fHz%n",
+                        n.nodeId(), n.zone(), n.cores(), n.frequencyHz()));
         topology.agents().values().forEach(a ->
-                System.out.printf("  Agent '%s' | zone=%s | model=%s | concurrency=%d | tools=%s%n",
-                        a.id(), a.hostZone(), a.llmProfileId(), a.maxConcurrency(), a.toolIds()));
+                System.out.printf("  Agent '%s' | zone=%s | model=%s | concurrency=%d | replicas=%d | instrPerStep=%d | tools=%s%n",
+                        a.id(), a.hostZone(), a.llmProfileId(), a.maxConcurrency(),
+                        a.replicas(), a.instructionsPerStep(), a.toolIds()));
         topology.llmProfiles().values().forEach(m ->
                 System.out.printf("  LLM '%s' | zone=%s | TTFT~Gamma(shape=%.1f,mean=%.0fms) | TPOT~Gamma(shape=%.1f,mean=%.1fms)%n",
                         m.id(), m.hostZone(), m.ttftGammaShape(), m.ttftMeanMs(),

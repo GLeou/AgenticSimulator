@@ -121,14 +121,15 @@ toc = [
     "8. Stochastic LLM Engine (engine/LLMEngine.java)",
     "9. Agent Decision Model (engine/AgentDecision.java)",
     "10. Tool Pool (engine/ToolPool.java)",
-    "11. Agent Service (runtime/AgentService.java)",
-    "12. Orchestrator (runtime/Orchestrator.java)",
-    "13. Message Record (runtime/Message.java)",
-    "14. Trajectory Collector (metrics/TrajectoryCollector.java)",
-    "15. Simulation Runner (AgenticSimulationRunner.java)",
-    "16. Entry Point (SimulatorApplication.java)",
-    "17. End-to-End Flow Example",
-    "18. Key Design Decisions",
+    "11. Infrastructure Layer (infra/InfrastructureLayer.java)",
+    "12. Agent Service (runtime/AgentService.java)",
+    "13. Orchestrator (runtime/Orchestrator.java)",
+    "14. Message Record (runtime/Message.java)",
+    "15. Trajectory Collector (metrics/TrajectoryCollector.java)",
+    "16. Simulation Runner (AgenticSimulationRunner.java)",
+    "17. Entry Point (SimulatorApplication.java)",
+    "18. End-to-End Flow Example",
+    "19. Key Design Decisions",
 ]
 for item in toc:
     pdf.bullet(item)
@@ -191,6 +192,7 @@ pdf.code_block(
     "  |-- loads JSON config --> Topology\n"
     "  |-- creates LLMEngine (stochastic LLM surrogate)\n"
     "  |-- creates ToolPool  (stochastic tool surrogate)\n"
+    "  |-- creates InfrastructureLayer (v1 CPU/queue model)\n"
     "  |-- creates EventScheduler (priority queue)\n"
     "  |-- creates TrajectoryCollector (CSV logger)\n"
     "  |-- creates Orchestrator (event router)\n"
@@ -201,12 +203,31 @@ pdf.code_block(
     "  |-- exports trajectory CSV"
 )
 
+pdf.section_title("Two-Layer Architecture")
+pdf.body_text(
+    "The simulator uses a two-layer latency model:\n\n"
+    "  Application Layer (v2): LLM inference, tool calls, agent decisions\n"
+    "  Infrastructure Layer (v1): CPU time-slicing, pod queuing, contention\n\n"
+    "When an agent processes a step, it first goes through the infrastructure layer "
+    "(local CPU compute: context building, prompt formatting, response parsing), "
+    "then dispatches the external LLM call. There is NO network cost between "
+    "the two layers because they run on the same machine."
+)
+pdf.code_block(
+    "Total step latency = infraLatencyMs + networkOut + inferenceMs + networkBack\n"
+    "                     ^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    "                     from v1 (CPU)   from v2 (external LLM API call)"
+)
+
 pdf.section_title("Event Flow")
 pdf.code_block(
     "User Request (Poisson)\n"
     "  --> [SUBMIT] Orchestrator schedules AgentReceive\n"
-    "  --> [AGENT_RECEIVE] AgentService builds context, calls LLM\n"
-    "      --> schedules LlmComplete (after network + inference latency)\n"
+    "  --> [AGENT_RECEIVE] AgentService builds context\n"
+    "      --> submits job to InfrastructureLayer (CPU compute)\n"
+    "      --> schedules InfraComplete (after CPU + queue latency)\n"
+    "  --> [INFRA_COMPLETE] CPU compute done, dispatch LLM call\n"
+    "      --> schedules LlmComplete (after network + inference)\n"
     "  --> [LLM_COMPLETE] Branch on decision:\n"
     "      GENERATE_TEXT --> workflow SUCCESS, terminate\n"
     "      CALL_TOOL     --> schedule ToolComplete\n"
@@ -228,18 +249,22 @@ pdf.code_block(
     "  |\n"
     "  |-- config/\n"
     "  |     +-- AgenticConfig.java       (all data records: Topology, Zone,\n"
-    "  |                                    LLMProfile, ToolProfile, etc.)\n"
+    "  |                                    LLMProfile, ToolProfile, InfraNode, etc.)\n"
     "  |-- engine/\n"
     "  |     +-- LLMEngine.java           (stochastic LLM: latency, cost, decisions)\n"
     "  |     +-- AgentDecision.java        (decision enum + record)\n"
     "  |     +-- ToolPool.java            (stochastic tool calls)\n"
+    "  |\n"
+    "  |-- infra/\n"
+    "  |     +-- InfrastructureLayer.java  (v1 CPU model: time-slicing, queuing)\n"
+    "  |     +-- InfraResult.java          (latency breakdown record)\n"
     "  |\n"
     "  |-- events/\n"
     "  |     +-- AgenticEvent.java        (sealed event hierarchy)\n"
     "  |\n"
     "  |-- runtime/\n"
     "  |     +-- Orchestrator.java        (event dispatcher + workflow submission)\n"
-    "  |     +-- AgentService.java        (the agent loop: receive->LLM->branch)\n"
+    "  |     +-- AgentService.java        (the agent loop: receive->infra->LLM->branch)\n"
     "  |     +-- Message.java             (token-carrying message record)\n"
     "  |\n"
     "  |-- scheduler/\n"
@@ -253,6 +278,7 @@ pdf.body_text(
     "The separation is intentional:\n"
     "- 'config' holds pure data (records) with no behavior.\n"
     "- 'engine' holds the stochastic models (LLM, tools) - the 'math'.\n"
+    "- 'infra' holds the infrastructure layer (CPU contention, pod queuing) - ported from v1.\n"
     "- 'events' defines the message types flowing through the system.\n"
     "- 'runtime' holds the processing logic (agent loop, orchestrator).\n"
     "- 'scheduler' is the DES engine itself (reusable, generic).\n"
@@ -331,21 +357,41 @@ pdf.body_text(
     "Latency is Gaussian. Tools can fail with a configurable error rate."
 )
 
+pdf.section_title("InfraNode")
+pdf.code_block(
+    "public record InfraNode(\n"
+    "    int nodeId, String zone,\n"
+    "    int cores, double frequencyHz,\n"
+    "    double bandwidthBytesPerSec\n"
+    ") {}"
+)
+pdf.body_text(
+    "Physical/virtual infrastructure node. Used by the InfrastructureLayer to model "
+    "CPU time-slicing and contention. When multiple jobs run on the same node, "
+    "each gets a share: speedPerJob = (cores / activeJobCount) * frequencyHz."
+)
+
 pdf.section_title("AgentDefinition")
 pdf.code_block(
     "public record AgentDefinition(\n"
     "    String id,\n"
-    "    String llmProfileId,     // which LLM this agent uses\n"
-    "    List<String> toolIds,    // which tools are available\n"
+    "    String llmProfileId,       // which LLM this agent uses\n"
+    "    List<String> toolIds,      // which tools are available\n"
     "    String hostZone,\n"
-    "    int maxConcurrency,      // thread pool size\n"
-    "    double coldStartMs       // container startup penalty\n"
+    "    int maxConcurrency,        // thread pool size\n"
+    "    double coldStartMs,        // container startup penalty\n"
+    "    long instructionsPerStep,  // CPU work per agent step\n"
+    "    int replicas               // number of pod replicas\n"
     ") {}"
 )
 pdf.body_text(
     "Defines an agent service. Each agent is hosted in a zone, uses a specific LLM, "
     "has access to certain tools, and has a concurrency limit (like a Pod's thread pool). "
-    "When all slots are busy, new requests queue up."
+    "When all slots are busy, new requests queue up.\n\n"
+    "instructionsPerStep defines how much CPU work each agent step requires "
+    "(context building, prompt formatting, response parsing). This is processed by the "
+    "infrastructure layer before the LLM call. replicas sets how many pod instances "
+    "are deployed (round-robin across nodes), matching v1's pod deployment model."
 )
 
 pdf.section_title("Topology & WorkflowSpec")
@@ -356,6 +402,7 @@ pdf.code_block(
     "    Map<String, LLMProfile> llmProfiles,\n"
     "    Map<String, ToolProfile> tools,\n"
     "    Map<String, AgentDefinition> agents,\n"
+    "    List<InfraNode> infraNodes,\n"
     "    WorkflowSpec workflow\n"
     ") {}\n\n"
     "public record WorkflowSpec(\n"
@@ -364,7 +411,8 @@ pdf.code_block(
     ") {}"
 )
 pdf.body_text(
-    "Topology bundles the entire experiment configuration. WorkflowSpec defines safety limits: "
+    "Topology bundles the entire experiment configuration including infrastructure nodes. "
+    "WorkflowSpec defines safety limits: "
     "max steps per workflow (prevents infinite loops) and max tokens (budget cap)."
 )
 
@@ -387,7 +435,11 @@ pdf.code_block(
     '  "vramGB": 80, "bandwidthBytesPerSec": 1.25e9\n'
     '}]'
 )
-pdf.body_text("Defines physical/virtual nodes. Each node belongs to a zone (CLOUD, EDGE, etc.).")
+pdf.body_text(
+    "Defines physical/virtual nodes. Each node belongs to a zone (CLOUD, EDGE, etc.). "
+    "These specs are used by both the zone system (for network latency) and the "
+    "InfrastructureLayer (for CPU time-slicing and contention modeling)."
+)
 
 pdf.section_title("Zone Pair Latencies")
 pdf.code_block('"zonePairLatencies": [\n  { "from": "CLOUD", "to": "CLOUD", "latencyMs": 1.0 }\n]')
@@ -430,6 +482,24 @@ pdf.code_block(
     '}]'
 )
 pdf.body_text("A search tool with ~200ms latency returning ~300 tokens. 0% error rate.")
+
+pdf.section_title("Agent Services")
+pdf.code_block(
+    '"agentServices": [{\n'
+    '  "serviceId": "agent-1",\n'
+    '  "nodeId": 1, "modelId": "gpt-4o",\n'
+    '  "maxConcurrency": 10, "hostZone": "CLOUD",\n'
+    '  "instructionsPerStep": 50000000,\n'
+    '  "replicas": 2\n'
+    '}]'
+)
+pdf.body_text(
+    "Each agent has infrastructure properties:\n"
+    "- instructionsPerStep: 50M instructions of CPU work per step (context building, "
+    "prompt formatting, response parsing). On an 8-core 3GHz node with no contention, "
+    "this takes ~2ms. Under heavy load with CPU sharing, it takes longer.\n"
+    "- replicas: 2 pod instances deployed round-robin across infrastructure nodes."
+)
 
 pdf.section_title("Simulation Parameters")
 pdf.code_block(
@@ -474,6 +544,22 @@ pdf.code_block(
 pdf.body_text(
     "A message has arrived at an agent and is ready for processing. This is the entry "
     "point for every agent step. Carries the input tokens via Message."
+)
+
+pdf.subsection_title("InfraComplete")
+pdf.code_block(
+    "record InfraComplete(double timeMs, String workflowId,\n"
+    "    String agentId, String infraJobId,\n"
+    "    AgentDecision decision, double cost,\n"
+    "    int outputTokens, double networkOut,\n"
+    "    double inferenceMs, double networkBack)"
+)
+pdf.body_text(
+    "The infrastructure compute (CPU work) has completed. The agent can now dispatch "
+    "the external LLM call. This event carries forward all the pre-sampled LLM values "
+    "(decision, cost, tokens, latency) so the LLM call can be scheduled immediately. "
+    "On firing, the infrastructure resources are released (CPU slot freed, next queued "
+    "job dequeued)."
 )
 
 pdf.subsection_title("LlmComplete")
@@ -644,10 +730,96 @@ pdf.body_text(
 
 
 # =============================================
-# 11. AGENT SERVICE
+# 11. INFRASTRUCTURE LAYER
 # =============================================
 pdf.add_page()
-pdf.chapter_title("11. Agent Service - The Agent Loop")
+pdf.chapter_title("11. Infrastructure Layer")
+pdf.body_text("File: infra/InfrastructureLayer.java")
+pdf.body_text(
+    "This class bridges v1 (Kubernetes simulator) and v2 (agentic simulator). It models "
+    "the physical infrastructure that agents run on: CPU time-slicing, pod queuing, "
+    "and contention effects. The math is ported directly from v1's Simulation.java."
+)
+
+pdf.section_title("Why Two Layers?")
+pdf.body_text(
+    "In v2, agents are microservices running on physical hardware. When an agent "
+    "processes a step (builds context, formats prompt, parses response), that work "
+    "requires CPU time on a real node. If multiple workflows hit the same node "
+    "simultaneously, they share CPU and each gets slower.\n\n"
+    "Previously, v2 only modeled application-level latency (LLM inference, tool calls). "
+    "Now the infrastructure layer adds the hardware cost on top, giving realistic "
+    "contention effects under load."
+)
+
+pdf.section_title("State (persists across calls)")
+pdf.code_block(
+    "Map<String, List<Pod>> agentToPods       // pods per agent\n"
+    "Map<Integer, List<ActiveJob>> nodeActiveJobs  // CPU jobs per node\n"
+    "Map<Integer, InfraNode> nodeMap           // node specs\n"
+    "Map<String, ActiveJob> jobIndex           // lookup by job ID"
+)
+
+pdf.section_title("Inner Classes")
+pdf.subsection_title("Pod")
+pdf.body_text(
+    "Same concept as v1's Pod: a container replica with a thread pool. "
+    "Has activeRequests counter, maxConcurrency limit, and a request queue."
+)
+pdf.subsection_title("ActiveJob")
+pdf.body_text(
+    "Tracks a running job on a CPU: remaining instructions, current speed "
+    "(recalculated when jobs arrive/depart), and the pod it belongs to."
+)
+
+pdf.section_title("submitJob(agentId, jobId, nowMs, instructions)")
+pdf.body_text(
+    "Called when an agent step begins. Returns estimated infrastructure latency:\n\n"
+    "1. Pick pod via round-robin load balancing\n"
+    "2. If pod at capacity: estimate queue wait from earliest-finishing job\n"
+    "3. updateProgress(): settle all running jobs to current time\n"
+    "4. Add new ActiveJob to the node\n"
+    "5. rescheduleNode(): recalculate speeds for all jobs on the node\n"
+    "   speedPerJob = (cores / totalActiveJobs) * frequencyHz\n"
+    "6. computeTimeMs = (instructions / speedPerJob) * 1000\n"
+    "7. Return InfraResult(queueWaitMs + computeTimeMs)"
+)
+
+pdf.section_title("releaseJob(jobId, nowMs)")
+pdf.body_text(
+    "Called when infrastructure compute completes (InfraComplete event fires):\n\n"
+    "1. Update progress on all node jobs\n"
+    "2. Remove completed job from active list\n"
+    "3. Free pod thread (activeRequests--)\n"
+    "4. Dequeue next waiting job if any\n"
+    "5. Recalculate speeds (remaining jobs speed up)"
+)
+
+pdf.section_title("Contention Example")
+pdf.body_text(
+    "Node: 8 cores, 3GHz. Agent step: 50M instructions.\n\n"
+    "1 concurrent job:  speed = 8 * 3GHz = 24GHz  ->  50M/24G = 2.1ms\n"
+    "5 concurrent jobs: speed = 1.6 * 3GHz = 4.8GHz -> 50M/4.8G = 10.4ms\n"
+    "10 concurrent jobs: speed = 0.8 * 3GHz = 2.4GHz -> 50M/2.4G = 20.8ms\n\n"
+    "Under heavy load, infrastructure latency grows 10x. This is the whole point "
+    "of integrating v1's model."
+)
+
+pdf.section_title("InfraResult")
+pdf.code_block(
+    "public record InfraResult(\n"
+    "    double infraLatencyMs,  // total: queue + compute\n"
+    "    double queueWaitMs,     // time spent waiting for pod capacity\n"
+    "    double computeMs        // time spent on CPU\n"
+    ") {}"
+)
+
+
+# =============================================
+# 12. AGENT SERVICE
+# =============================================
+pdf.add_page()
+pdf.chapter_title("12. Agent Service - The Agent Loop")
 pdf.body_text("File: runtime/AgentService.java")
 pdf.body_text(
     "This is the most complex class - it implements the full agentic processing loop. "
@@ -700,10 +872,20 @@ pdf.body_text(
     "- Look up the LLM profile (from agent's llmProfileId).\n"
     "- Calculate network latency: agent zone -> LLM zone -> agent zone.\n"
     "- Sample output tokens, decision, inference latency, and cost from LLMEngine.\n"
-    "- Schedule LlmComplete event at time: now + networkOut + inference + networkBack."
+    "- Submit job to InfrastructureLayer (CPU compute for context building).\n"
+    "- Schedule InfraComplete at time: now + infraLatencyMs.\n"
+    "  (carries forward all LLM values for the next step)"
 )
 
-pdf.subsection_title("Step 3: onLlmComplete(LlmComplete)")
+pdf.subsection_title("Step 3: onInfraComplete(InfraComplete)")
+pdf.body_text(
+    "Infrastructure CPU compute has finished:\n"
+    "- Release infrastructure resources (infraLayer.releaseJob).\n"
+    "- Now schedule the external LLM call.\n"
+    "- Schedule LlmComplete at time: now + networkOut + inference + networkBack."
+)
+
+pdf.subsection_title("Step 4: onLlmComplete(LlmComplete)")
 pdf.body_text(
     "The LLM has responded. Branch on the decision:\n"
     "- GENERATE_TEXT -> terminate with SUCCESS\n"
@@ -712,7 +894,7 @@ pdf.body_text(
     "- FAIL -> terminate with LLM_FAIL"
 )
 
-pdf.subsection_title("Step 4: dispatchTool()")
+pdf.subsection_title("Step 5: dispatchTool()")
 pdf.body_text(
     "- Look up tool profile for network zone.\n"
     "- Calculate network latency: agent zone -> tool zone -> agent zone.\n"
@@ -720,7 +902,7 @@ pdf.body_text(
     "- Schedule ToolComplete at time: now + networkOut + toolMs + networkBack."
 )
 
-pdf.subsection_title("Step 5: onToolComplete(ToolComplete)")
+pdf.subsection_title("Step 6: onToolComplete(ToolComplete)")
 pdf.body_text(
     "- If errored: terminate with TOOL_FAILURE.\n"
     "- Otherwise: create a follow-up Message with the tool's response tokens.\n"
@@ -738,10 +920,10 @@ pdf.body_text(
 
 
 # =============================================
-# 12. ORCHESTRATOR
+# 13. ORCHESTRATOR
 # =============================================
 pdf.add_page()
-pdf.chapter_title("12. Orchestrator")
+pdf.chapter_title("13. Orchestrator")
 pdf.body_text("File: runtime/Orchestrator.java")
 pdf.body_text(
     "Simple event router and workflow entry point. Two responsibilities:"
@@ -759,17 +941,18 @@ pdf.body_text(
     "pattern matching (instanceof) to route each event type to the correct AgentService method:"
 )
 pdf.code_block(
-    "AgentReceive  -> agents.get(agentId).onReceive()\n"
-    "LlmComplete   -> agents.get(agentId).onLlmComplete()\n"
+    "AgentReceive   -> agents.get(agentId).onReceive()\n"
+    "InfraComplete  -> agents.get(agentId).onInfraComplete()\n"
+    "LlmComplete    -> agents.get(agentId).onLlmComplete()\n"
     "ToolComplete   -> agents.get(agentId).onToolComplete()\n"
     "WorkflowComplete -> log final metrics to TrajectoryCollector"
 )
 
 
 # =============================================
-# 13. MESSAGE
+# 14. MESSAGE
 # =============================================
-pdf.chapter_title("13. Message Record")
+pdf.chapter_title("14. Message Record")
 pdf.body_text("File: runtime/Message.java")
 pdf.code_block(
     "public record Message(\n"
@@ -789,10 +972,10 @@ pdf.body_text(
 
 
 # =============================================
-# 14. TRAJECTORY COLLECTOR
+# 15. TRAJECTORY COLLECTOR
 # =============================================
 pdf.add_page()
-pdf.chapter_title("14. Trajectory Collector")
+pdf.chapter_title("15. Trajectory Collector")
 pdf.body_text("File: metrics/TrajectoryCollector.java")
 pdf.body_text(
     "In-memory event log that writes to CSV. Every significant event in the simulation "
@@ -814,10 +997,10 @@ pdf.body_text(
 
 
 # =============================================
-# 15. SIMULATION RUNNER
+# 16. SIMULATION RUNNER
 # =============================================
 pdf.add_page()
-pdf.chapter_title("15. Simulation Runner")
+pdf.chapter_title("16. Simulation Runner")
 pdf.body_text("File: AgenticSimulationRunner.java")
 pdf.body_text(
     "The main orchestration class. It wires everything together and runs the simulation. "
@@ -842,12 +1025,15 @@ pdf.section_title("Phase 3: Create Components")
 pdf.code_block(
     "LLMEngine llm = new LLMEngine(new Random(seed), decisionPolicy);\n"
     "ToolPool tools = new ToolPool(topology.tools(), new Random(seed+1));\n"
+    "InfrastructureLayer infraLayer = new InfrastructureLayer(\n"
+    "    topology.infraNodes(), topology.agents());\n"
     "EventScheduler scheduler = new EventScheduler();\n"
     "TrajectoryCollector trace = new TrajectoryCollector();\n"
     "Orchestrator orchestrator = new Orchestrator(topology, scheduler, trace);\n\n"
     "// Register all agents\n"
     "for each agent in topology:\n"
-    "    AgentService agent = new AgentService(def, topology, llm, tools, scheduler, trace);\n"
+    "    AgentService agent = new AgentService(\n"
+    "        def, topology, llm, tools, scheduler, trace, infraLayer);\n"
     "    orchestrator.registerAgent(agentId, agent);"
 )
 
@@ -883,10 +1069,10 @@ pdf.body_text(
 
 
 # =============================================
-# 16. ENTRY POINT
+# 17. ENTRY POINT
 # =============================================
 pdf.add_page()
-pdf.chapter_title("16. Entry Point")
+pdf.chapter_title("17. Entry Point")
 pdf.body_text("File: SimulatorApplication.java")
 pdf.body_text(
     "Spring Boot application with two modes:\n"
@@ -904,14 +1090,15 @@ pdf.code_block(
 
 
 # =============================================
-# 17. END-TO-END FLOW
+# 18. END-TO-END FLOW
 # =============================================
 pdf.add_page()
-pdf.chapter_title("17. End-to-End Flow Example")
+pdf.chapter_title("18. End-to-End Flow Example")
 pdf.body_text(
     "Let's trace a single workflow through the entire system with the default config: "
-    "1 agent (agent-1) in CLOUD, 1 LLM (gpt-4o) in CLOUD, 1 tool (search-tool) in CLOUD, "
-    "intra-cloud latency = 1ms."
+    "1 agent (agent-1) in CLOUD with 2 replicas, 1 LLM (gpt-4o) in CLOUD, "
+    "1 tool (search-tool) in CLOUD, intra-cloud latency = 1ms, "
+    "node: 8 cores @ 3GHz, agent: 50M instructions/step."
 )
 
 pdf.section_title("t=0.000ms: Workflow Submitted")
@@ -927,66 +1114,90 @@ pdf.body_text(
     "  - Creates WorkflowContext(startedAt=0)\n"
     "  - stepIndex = 1, accumulatedInputTokens = 50\n"
     "  - Budget check: 1 <= 10 steps, 50 <= 10000 tokens. OK.\n"
-    "  - Looks up LLM profile: gpt-4o in CLOUD\n"
-    "  - Network: CLOUD->CLOUD = 1ms out + 1ms back = 2ms\n"
     "  - Samples outputTokens ~ Gaussian(150, 50) = e.g., 142\n"
     "  - Samples decision: roll=0.35 < 0.6 (call_tool weight) -> CALL_TOOL('search-tool')\n"
     "  - Samples TTFT ~ Gamma(4, 400) = e.g., 380ms\n"
     "  - Samples TPOT ~ Gamma(10, 25) = e.g., 24ms\n"
     "  - Inference = 380 + 142 * 24 = 3788ms\n"
-    "  - Cost = 50 * $2.5e-6 + 142 * $10e-6 = $0.001545\n"
-    "  - Schedules LlmComplete at t = 0 + 1 + 3788 + 1 = 3790ms"
+    "  - Cost = 50 * $2.5e-6 + 142 * $10e-6 = $0.001545"
 )
 
-pdf.section_title("t=3790ms: LLM Completes")
+pdf.section_title("t=0.000ms: Infrastructure Compute (INFRA_SUBMIT)")
 pdf.body_text(
-    "Decision was CALL_TOOL('search-tool'). Agent dispatches tool call:\n"
+    "Before dispatching the LLM call, the agent does local CPU work "
+    "(context building, prompt formatting). This goes through the infrastructure layer:\n"
+    "  - infraLayer.submitJob('agent-1', jobId, 0ms, 50M instructions)\n"
+    "  - Node: 8 cores, 3GHz, 0 other active jobs\n"
+    "  - speedPerJob = (8/1) * 3GHz = 24GHz\n"
+    "  - computeMs = (50M / 24G) * 1000 = 2.08ms\n"
+    "  - queueWaitMs = 0 (pod has capacity)\n"
+    "  - Schedules InfraComplete at t = 0 + 2.08 = 2.08ms"
+)
+
+pdf.section_title("t=2.08ms: Infrastructure Complete (INFRA_COMPLETE)")
+pdf.body_text(
+    "CPU compute done. infraLayer.releaseJob() frees the CPU slot.\n"
+    "Now the agent dispatches the external LLM call:\n"
+    "  - Network: CLOUD->CLOUD = 1ms out + 1ms back = 2ms\n"
+    "  - Schedules LlmComplete at t = 2.08 + 1 + 3788 + 1 = 3792.08ms"
+)
+
+pdf.section_title("t=3792ms: LLM Completes")
+pdf.body_text(
+    "Decision was CALL_TOOL('search-tool'). Agent dispatches tool call (external API):\n"
     "  - Tool profile: search-tool in CLOUD\n"
     "  - Network: 1ms + 1ms = 2ms\n"
     "  - Tool latency ~ Gaussian(200, 50) = e.g., 185ms\n"
     "  - Error check: random() = 0.72 >= 0.0 (errorRate) -> no error\n"
     "  - Response tokens = 300\n"
-    "  - Schedules ToolComplete at t = 3790 + 1 + 185 + 1 = 3977ms"
+    "  - Schedules ToolComplete at t = 3792 + 1 + 185 + 1 = 3979ms\n\n"
+    "Note: No infrastructure cost for tool calls - tools are external APIs."
 )
 
-pdf.section_title("t=3977ms: Tool Completes")
+pdf.section_title("t=3979ms: Tool Completes")
 pdf.body_text(
     "Tool succeeded. Creates follow-up Message(search-tool -> agent-1, 300 tokens). "
     "Calls processReceive() directly (reuses concurrency slot)."
 )
 
-pdf.section_title("t=3977ms: Agent Receives Tool Result (Step 2)")
+pdf.section_title("t=3979ms: Agent Receives Tool Result (Step 2)")
 pdf.body_text(
     "The tool result arrives back at the agent. processReceive() is called again, "
-    "which triggers a NEW LLM call so the LLM can evaluate the tool result and "
-    "decide what to do next.\n\n"
-    "processReceive():\n"
+    "which triggers a NEW LLM call (LLM call #2) so the LLM can evaluate the tool "
+    "result and decide what to do next. First, the LLM parameters are sampled:\n"
     "  - stepIndex = 2, accumulatedInputTokens = 50 + 300 = 350\n"
-    "  - Budget check: 2 <= 10, 350 <= 10000. OK."
-)
-
-pdf.section_title("t=3977ms: LLM Call #2 Dispatched")
-pdf.body_text(
-    "The agent sends the tool result (350 accumulated tokens) to the LLM for evaluation. "
-    "This is a full LLM inference call with its own latency and cost:\n"
+    "  - Budget check: 2 <= 10, 350 <= 10000. OK.\n"
     "  - Samples outputTokens ~ Gaussian(150, 50) = e.g., 168\n"
-    "  - Samples decision: roll=0.71 >= 0.6 (generate_text weight) -> GENERATE_TEXT\n"
+    "  - Samples decision: roll=0.71 >= 0.6 -> GENERATE_TEXT\n"
     "  - Samples TTFT ~ Gamma(4, 400) = e.g., 390ms\n"
     "  - Samples TPOT ~ Gamma(10, 25) = e.g., 24ms\n"
     "  - Inference = 390 + 168 * 24 = 4422ms\n"
-    "  - Cost = 350 * $2.5e-6 + 168 * $10e-6 = $0.002555\n"
-    "  - Schedules LlmComplete at t = 3977 + 1 + 4422 + 1 = 8401ms\n\n"
-    "Note: This is the same LLM call mechanism as Step 1. Every time the agent receives "
-    "a message (whether from a user or a tool result), it makes an LLM call to decide "
-    "the next action. The LLM uses the same probability weights (60% call_tool, "
-    "40% generate_text) each time."
+    "  - Cost = 350 * $2.5e-6 + 168 * $10e-6 = $0.002555\n\n"
+    "These values are carried forward through the infrastructure step and used "
+    "when the actual LLM call is dispatched after infra compute completes."
 )
 
-pdf.section_title("t=8401ms: LLM Completes -> SUCCESS")
+pdf.section_title("t=3979ms: Infrastructure Compute #2 (INFRA_SUBMIT)")
 pdf.body_text(
-    "The LLM's decision is GENERATE_TEXT, meaning it determined the tool result was "
-    "sufficient to answer the user's question. Workflow terminates:\n"
-    "  - Total latency: 8401 - 0 = 8401ms (8.4 seconds)\n"
+    "Same as Step 1  - agent does local CPU work before the LLM call:\n"
+    "  - infraLayer.submitJob('agent-1', jobId, 3979ms, 50M instructions)\n"
+    "  - Node may have other active jobs now (depends on concurrent workflows)\n"
+    "  - If 1 other job active: speed = (8/2) * 3GHz = 12GHz\n"
+    "    -> computeMs = (50M / 12G) * 1000 = 4.17ms\n"
+    "  - If unloaded: computeMs = 2.08ms (same as Step 1)\n"
+    "  - Schedules InfraComplete at t = 3979 + 2.08 = 3981.08ms"
+)
+
+pdf.section_title("t=3981ms: Infrastructure Complete -> LLM Call #2 Dispatched")
+pdf.body_text(
+    "CPU compute done. Release infra resources. Dispatch LLM call:\n"
+    "  - Schedules LlmComplete at t = 3981 + 1 + 4422 + 1 = 8405ms"
+)
+
+pdf.section_title("t=8405ms: LLM Completes -> SUCCESS")
+pdf.body_text(
+    "The LLM's decision is GENERATE_TEXT. Workflow terminates:\n"
+    "  - Total latency: 8405 - 0 = 8405ms (8.4 seconds)\n"
     "  - Total cost: $0.001545 + $0.002555 = $0.0041\n"
     "  - Total steps: 2\n"
     "  - Reason: SUCCESS\n\n"
@@ -996,31 +1207,35 @@ pdf.body_text(
     "Concurrency slot freed. Next queued workflow (if any) is dequeued."
 )
 
-pdf.section_title("t=8401ms: Orchestrator Logs COMPLETE")
+pdf.section_title("t=8405ms: Orchestrator Logs COMPLETE")
 pdf.body_text(
     "TrajectoryCollector records the final row with all metrics. "
-    "This workflow generated ~10 trace events total:\n\n"
+    "This workflow generated ~14 trace events total:\n\n"
     "  1. SUBMIT              - workflow enters the system\n"
     "  2. AGENT_RECEIVE       - agent gets user message\n"
-    "  3. LLM_DISPATCH        - LLM call #1 sent (agent -> LLM)\n"
-    "  4. LLM_COMPLETE        - LLM call #1 returns: CALL_TOOL\n"
-    "  5. TOOL_DISPATCH       - tool call sent (agent -> tool)\n"
-    "  6. TOOL_RETURN         - tool result comes back\n"
-    "  7. AGENT_RECEIVE       - agent receives tool result\n"
-    "  8. LLM_DISPATCH        - LLM call #2 sent (agent -> LLM)\n"
-    "  9. LLM_COMPLETE        - LLM call #2 returns: GENERATE_TEXT\n"
-    "  10. COMPLETE            - workflow finished\n\n"
-    "Notice how there are TWO LLM calls: one for the initial decision (step 1) "
-    "and one after the tool result comes back (step 2). Every agent step involves "
-    "an LLM call."
+    "  3. INFRA_SUBMIT        - infra compute #1 starts (CPU work)\n"
+    "  4. INFRA_COMPLETE      - infra compute #1 done\n"
+    "  5. LLM_DISPATCH        - LLM call #1 sent (agent -> LLM)\n"
+    "  6. LLM_COMPLETE        - LLM call #1 returns: CALL_TOOL\n"
+    "  7. TOOL_DISPATCH       - tool call sent (agent -> tool)\n"
+    "  8. TOOL_RETURN         - tool result comes back\n"
+    "  9. AGENT_RECEIVE       - agent receives tool result\n"
+    "  10. INFRA_SUBMIT       - infra compute #2 starts\n"
+    "  11. INFRA_COMPLETE     - infra compute #2 done\n"
+    "  12. LLM_DISPATCH       - LLM call #2 sent (agent -> LLM)\n"
+    "  13. LLM_COMPLETE       - LLM call #2 returns: GENERATE_TEXT\n"
+    "  14. COMPLETE            - workflow finished\n\n"
+    "Notice the two-layer pattern: every agent step goes through INFRA first "
+    "(CPU compute), then LLM (external API). The infra latency is small (~2ms) when "
+    "unloaded, but grows under contention as concurrent workflows share CPU resources."
 )
 
 
 # =============================================
-# 18. KEY DESIGN DECISIONS
+# 19. KEY DESIGN DECISIONS
 # =============================================
 pdf.add_page()
-pdf.chapter_title("18. Key Design Decisions")
+pdf.chapter_title("19. Key Design Decisions")
 
 pdf.section_title("Why Discrete Event Simulation?")
 pdf.body_text(
@@ -1065,6 +1280,26 @@ pdf.body_text(
     "- Use scripted sequences for debugging (e.g., 'always call tool twice then finish')\n"
     "- Swap in ML-based policies in the future\n"
     "- Test edge cases (e.g., 'always fail')"
+)
+
+pdf.section_title("Why Two Layers? (v1 + v2 Integration)")
+pdf.body_text(
+    "The simulator uses a two-layer architecture:\n"
+    "- Application layer (v2): models what the agent DOES (LLM calls, tool calls, decisions)\n"
+    "- Infrastructure layer (v1): models what the agent RUNS ON (CPU, pods, contention)\n\n"
+    "This separation exists because:\n"
+    "1. LLM inference is an external API call  - latency depends on the model provider, "
+    "not the local hardware.\n"
+    "2. But the agent's local work (context building, prompt formatting, response parsing) "
+    "runs on physical CPUs and IS affected by hardware contention.\n"
+    "3. Under light load, the infra cost is negligible (~2ms). Under heavy load with "
+    "many concurrent workflows sharing the same node, it can grow to 20ms+ and "
+    "queue waits add even more.\n"
+    "4. There is NO network cost between the layers  - they run on the same machine. "
+    "The agent doesn't 'call' the infrastructure over a network.\n\n"
+    "The infrastructure layer is a live, stateful service. Each call sees the current "
+    "system state (active jobs, queue sizes) and returns an estimate that reflects "
+    "real contention at that moment."
 )
 
 pdf.section_title("Concurrency = Queuing Theory")

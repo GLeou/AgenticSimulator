@@ -9,6 +9,8 @@ import com.thesis.simulator.agentic.engine.AgentDecision;
 import com.thesis.simulator.agentic.engine.LLMEngine;
 import com.thesis.simulator.agentic.engine.ToolPool;
 import com.thesis.simulator.agentic.events.AgenticEvent;
+import com.thesis.simulator.agentic.infra.InfraResult;
+import com.thesis.simulator.agentic.infra.InfrastructureLayer;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.scheduler.EventScheduler;
 
@@ -33,6 +35,7 @@ public class AgentService {
     private final ToolPool tools;
     private final EventScheduler scheduler;
     private final TrajectoryCollector trace;
+    private final InfrastructureLayer infraLayer;
 
     // --- Concurrency control (ported from v1's Pod model) ---
     private int activeRequests = 0;
@@ -40,6 +43,7 @@ public class AgentService {
 
     /** Per-workflow ephemeral session. */
     private final Map<String, WorkflowContext> contexts = new HashMap<>();
+    private int infraJobCounter = 0;
 
     /**
      * Step 1 + 2: receive message, check concurrency, build context, kick off LLM call.
@@ -76,8 +80,7 @@ public class AgentService {
             return;
         }
 
-        // Step 3: schedule LLM call.
-        // Total wallclock = network(agent → llm) + inference + network(llm → agent)
+        // Sample LLM decision and latency (needed later after infra completes)
         LLMProfile profile = topology.llmProfiles().get(def.llmProfileId());
         double networkOut = networkLatency(def.hostZone(), profile.hostZone());
         double networkBack = networkLatency(profile.hostZone(), def.hostZone());
@@ -90,17 +93,48 @@ public class AgentService {
         ctx.totalCostUsd += cost;
         ctx.accumulatedOutputTokens += outputTokens;
 
-        double completeAt = ev.timeMs() + networkOut + inferenceMs + networkBack;
-        scheduler.schedule(new AgenticEvent.LlmComplete(
-                completeAt, ev.workflowId(), def.id(), decision, cost, outputTokens));
+        // Submit to infrastructure layer: compute local CPU cost (context building, parsing)
+        String infraJobId = def.id() + "-infra-" + (++infraJobCounter);
+        InfraResult infra = infraLayer.submitJob(def.id(), infraJobId, ev.timeMs(),
+                def.instructionsPerStep());
 
-        trace.log(ev.workflowId(), def.id(), "LLM_DISPATCH", ev.timeMs(),
-                Map.of("network_out_ms", networkOut,
-                       "inference_ms", inferenceMs,
-                       "network_back_ms", networkBack,
+        // Schedule InfraComplete — LLM call starts AFTER infra compute finishes
+        double infraCompleteAt = ev.timeMs() + infra.infraLatencyMs();
+        scheduler.schedule(new AgenticEvent.InfraComplete(
+                infraCompleteAt, ev.workflowId(), def.id(), infraJobId,
+                decision, cost, outputTokens, networkOut, inferenceMs, networkBack));
+
+        trace.log(ev.workflowId(), def.id(), "INFRA_SUBMIT", ev.timeMs(),
+                Map.of("infra_job_id", infraJobId,
+                       "infra_latency_ms", infra.infraLatencyMs(),
+                       "queue_wait_ms", infra.queueWaitMs(),
+                       "compute_ms", infra.computeMs(),
                        "output_tokens", outputTokens,
                        "decision", decision.kind().name(),
-                       "cost_usd", cost,
+                       "cost_usd", cost));
+    }
+
+    /** Infrastructure compute completed — now dispatch the LLM call. */
+    public void onInfraComplete(AgenticEvent.InfraComplete ev) {
+        // Release infrastructure resources (free CPU, dequeue next job)
+        infraLayer.releaseJob(ev.infraJobId(), ev.timeMs());
+
+        trace.log(ev.workflowId(), def.id(), "INFRA_COMPLETE", ev.timeMs(),
+                Map.of("infra_job_id", ev.infraJobId()));
+
+        // Now schedule the LLM call (agent → LLM → agent)
+        double completeAt = ev.timeMs() + ev.networkOut() + ev.inferenceMs() + ev.networkBack();
+        scheduler.schedule(new AgenticEvent.LlmComplete(
+                completeAt, ev.workflowId(), def.id(),
+                ev.decision(), ev.cost(), ev.outputTokens()));
+
+        trace.log(ev.workflowId(), def.id(), "LLM_DISPATCH", ev.timeMs(),
+                Map.of("network_out_ms", ev.networkOut(),
+                       "inference_ms", ev.inferenceMs(),
+                       "network_back_ms", ev.networkBack(),
+                       "output_tokens", ev.outputTokens(),
+                       "decision", ev.decision().kind().name(),
+                       "cost_usd", ev.cost(),
                        "completes_at", completeAt));
     }
 

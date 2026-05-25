@@ -13,6 +13,7 @@ public sealed interface AgenticEvent
         extends Comparable<AgenticEvent>
         permits AgenticEvent.TaskSubmit,
                 AgenticEvent.AgentReceive,
+                AgenticEvent.InfraComplete,
                 AgenticEvent.LlmComplete,
                 AgenticEvent.ToolComplete,
                 AgenticEvent.WorkflowComplete {
@@ -30,6 +31,12 @@ public sealed interface AgenticEvent
 
     /** A message has finished traversing the network and is ready for the agent to process. */
     record AgentReceive(double timeMs, String workflowId, String agentId, Message message)
+            implements AgenticEvent {}
+
+    /** Infrastructure compute has completed; the agent can now dispatch the LLM call. */
+    record InfraComplete(double timeMs, String workflowId, String agentId, String infraJobId,
+                         AgentDecision decision, double cost, int outputTokens,
+                         double networkOut, double inferenceMs, double networkBack)
             implements AgenticEvent {}
 
     /** An LLM call has finished generating; the decision is now known. */

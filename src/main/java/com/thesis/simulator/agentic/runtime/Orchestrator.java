@@ -42,6 +42,8 @@ public class Orchestrator {
     public void process(AgenticEvent ev) {
         if (ev instanceof AgenticEvent.AgentReceive e) {
             agents.get(e.agentId()).onReceive(e);
+        } else if (ev instanceof AgenticEvent.InfraComplete e) {
+            agents.get(e.agentId()).onInfraComplete(e);
         } else if (ev instanceof AgenticEvent.LlmComplete e) {
             agents.get(e.agentId()).onLlmComplete(e);
         } else if (ev instanceof AgenticEvent.ToolComplete e) {
