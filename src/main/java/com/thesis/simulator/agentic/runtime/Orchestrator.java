@@ -48,12 +48,15 @@ public class Orchestrator {
             agents.get(e.agentId()).onLlmComplete(e);
         } else if (ev instanceof AgenticEvent.ToolComplete e) {
             agents.get(e.agentId()).onToolComplete(e);
-        } else if (ev instanceof AgenticEvent.WorkflowComplete e) {
-            trace.log(e.workflowId(), "ORCHESTRATOR", "COMPLETE", e.timeMs(),
-                    Map.of("reason", e.reason(),
-                           "total_latency_ms", e.totalLatencyMs(),
-                           "total_cost_usd", e.totalCostUsd(),
-                           "steps", e.totalSteps()));
+        } else if (ev instanceof AgenticEvent.WorkflowComplete(
+                double timeMs, String workflowId, String reason, double totalLatencyMs, double totalCostUsd,
+                int totalSteps
+        )) {
+            trace.log(workflowId, "ORCHESTRATOR", "COMPLETE", timeMs,
+                    Map.of("reason", reason,
+                           "total_latency_ms", totalLatencyMs,
+                           "total_cost_usd", totalCostUsd,
+                           "steps", totalSteps));
         } else if (ev instanceof AgenticEvent.TaskSubmit) {
             // Reserved for queued submissions; not yet implemented.
         }

@@ -6,7 +6,6 @@ import com.thesis.simulator.agentic.config.AgenticConfig.*;
 import com.thesis.simulator.agentic.engine.AgentDecision;
 import com.thesis.simulator.agentic.engine.LLMEngine;
 import com.thesis.simulator.agentic.engine.ToolPool;
-import com.thesis.simulator.agentic.events.AgenticEvent;
 import com.thesis.simulator.agentic.infra.InfrastructureLayer;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.runtime.AgentService;

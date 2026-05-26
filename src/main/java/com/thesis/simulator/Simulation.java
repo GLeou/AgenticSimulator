@@ -157,7 +157,7 @@ public class Simulation {
         Services startService = services.stream()
                 .filter(s -> !calleeIds.contains(s.getService_id()))
                 .findFirst()
-                .orElse(services.get(0));
+                .orElse(services.getFirst());
 
         // Generate Poisson-distributed arrival events over [0, T]
         Random random = new Random(42);

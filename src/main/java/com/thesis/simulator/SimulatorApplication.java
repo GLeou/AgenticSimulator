@@ -19,7 +19,7 @@ public class SimulatorApplication implements CommandLineRunner {
     public void run(String... args) {
         try {
             boolean runAgentic = Arrays.stream(args)
-                    .anyMatch(a -> "agentic".equalsIgnoreCase(a));
+                    .anyMatch("agentic"::equalsIgnoreCase);
 
             if (runAgentic) {
                 // V2: Agentic simulation with LLM-driven decision-making
