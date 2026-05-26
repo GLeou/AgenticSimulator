@@ -5,7 +5,7 @@ import java.util.Map;
 
 /**
  * Configuration records for the agentic simulation layer.
- * Wire these into your existing JSON/YAML loader (Jackson works out of the box on records).
+ * All records are Jackson-compatible for direct JSON deserialization.
  */
 public final class AgenticConfig {
 
@@ -64,7 +64,7 @@ public final class AgenticConfig {
             int replicas
     ) {}
 
-    /** The whole configuration loaded from disk for one experiment. */
+    /** Complete simulation topology loaded from a single experiment configuration file. */
     public record Topology(
             List<Zone> zones,
             List<NetworkLink> links,
@@ -75,7 +75,7 @@ public final class AgenticConfig {
             WorkflowSpec workflow
     ) {}
 
-    /** Minimal workflow spec for the happy-path demo. */
+    /** Workflow specification: entry agent, prompt size, and budget constraints. */
     public record WorkflowSpec(
             String entryAgent,
             int initialPromptTokens,

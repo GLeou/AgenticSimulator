@@ -18,18 +18,20 @@ import java.nio.file.Path;
 import java.util.*;
 
 /**
- * Runs the agentic simulation with Poisson traffic generation and
- * probabilistic (weighted-random) decision policy.
- *
- * Loads configuration from JSON and generates multiple concurrent workflows
- * over the simulation duration, then writes trajectory CSV.
+ * Entry point for the agentic simulation (v2).
+ * <p>
+ * Loads the experiment configuration from JSON, constructs the simulation topology
+ * (infrastructure, agents, LLM profiles, tools), generates Poisson-distributed
+ * traffic, and executes the discrete-event loop. Agent decisions are sampled
+ * stochastically using a configurable weighted-random policy. Results are
+ * exported as a trajectory CSV for analysis.
  */
 public class AgenticSimulationRunner {
 
     public void run(String configPath) throws Exception {
         System.out.println("=== Starting Agentic Simulation (v2 — Refactored) ===");
 
-        // --- Load config ---
+        // Load and parse configuration
         ObjectMapper mapper = new ObjectMapper();
         InputStream is = getClass().getClassLoader().getResourceAsStream(configPath);
         if (is == null) throw new IllegalArgumentException("Config not found: " + configPath);
@@ -45,7 +47,7 @@ public class AgenticSimulationRunner {
 
         Random rng = new Random(seed);
 
-        // --- Build decision policy: weighted random choice ---
+        // Build weighted-random decision policy from configured weights
         JsonNode weightsNode = root.get("llmModels").get(0).get("decisionWeights");
         Map<String, Double> decisionWeights = new LinkedHashMap<>();
         weightsNode.fields().forEachRemaining(e -> decisionWeights.put(e.getKey(), e.getValue().asDouble()));
@@ -81,12 +83,11 @@ public class AgenticSimulationRunner {
 
         ToolPool tools = new ToolPool(topology.tools(), new Random(seed + 1));
 
-        // --- Wire components ---
+        // Wire simulation components
         EventScheduler scheduler = new EventScheduler();
         TrajectoryCollector trace = new TrajectoryCollector();
         Orchestrator orchestrator = new Orchestrator(topology, scheduler, trace);
 
-        // Build infrastructure layer from node specs
         InfrastructureLayer infraLayer = new InfrastructureLayer(
                 topology.infraNodes(), topology.agents());
 
@@ -99,7 +100,7 @@ public class AgenticSimulationRunner {
 
         printConfig(topology, decisionWeights, T, arrivalRate);
 
-        // --- Generate traffic (Poisson process) ---
+        // Generate Poisson-distributed arrival events over the simulation duration
         double currentArrivalMs = 0.0;
         int reqId = 1;
 
@@ -110,8 +111,7 @@ public class AgenticSimulationRunner {
             orchestrator.submit("wf-" + String.format("%04d", reqId), promptTokens, currentArrivalMs);
             reqId++;
 
-            // Exponential inter-arrival: gap = -ln(U) / lambda
-            // arrivalRate is per second, convert to per ms
+            // Exponential inter-arrival time: gap = -ln(U) / lambda_ms
             double lambdaMs = arrivalRate / 1000.0;
             double u = 1.0 - rng.nextDouble();
             currentArrivalMs += -Math.log(u) / lambdaMs;
@@ -121,24 +121,21 @@ public class AgenticSimulationRunner {
         System.out.println("Generated " + totalRequests + " requests over "
                 + String.format("%.0f", T / 1000.0) + "s (lambda=" + arrivalRate + "/s)");
 
-        // --- Run event loop ---
+        // Execute the discrete-event loop
         scheduler.run(orchestrator::process);
 
-        // --- Export ---
+        // Export trajectory data
         Path traceOut = Path.of("agentic_trajectory.csv");
         trace.writeCsv(traceOut);
         System.out.println("Trajectory saved to " + traceOut.toAbsolutePath());
 
-        // --- Summary ---
         printSummary(trace);
     }
 
-    // ==========================================
-    // Config Parsing
-    // ==========================================
+    // ── Configuration Parsing ──────────────────────────────────────
 
+    /** Parses the full simulation topology from the root JSON configuration. */
     private Topology parseTopology(JsonNode root) {
-        // Zones + InfraNodes
         List<Zone> zones = new ArrayList<>();
         List<InfraNode> infraNodes = new ArrayList<>();
         for (JsonNode n : root.get("nodes")) {
@@ -150,10 +147,8 @@ public class AgenticSimulationRunner {
                     n.get("frequencyHz").asDouble(),
                     n.has("bandwidthBytesPerSec") ? n.get("bandwidthBytesPerSec").asDouble() : 1_250_000_000.0));
         }
-        // Deduplicate zones
         zones = zones.stream().distinct().toList();
 
-        // Network links
         List<NetworkLink> links = new ArrayList<>();
         for (JsonNode zl : root.get("zonePairLatencies")) {
             links.add(new NetworkLink(
@@ -163,7 +158,6 @@ public class AgenticSimulationRunner {
                     zl.has("bandwidthMbps") ? zl.get("bandwidthMbps").asDouble() : 1000.0));
         }
 
-        // LLM profiles
         Map<String, LLMProfile> llmProfiles = new LinkedHashMap<>();
         for (JsonNode m : root.get("llmModels")) {
             String id = m.get("modelId").asText();
@@ -181,7 +175,6 @@ public class AgenticSimulationRunner {
                             : root.get("nodes").get(0).get("zone").asText()));
         }
 
-        // Tools
         Map<String, ToolProfile> toolProfiles = new LinkedHashMap<>();
         for (JsonNode t : root.get("tools")) {
             String id = t.get("toolId").asText();
@@ -195,7 +188,6 @@ public class AgenticSimulationRunner {
                             : root.get("nodes").get(0).get("zone").asText()));
         }
 
-        // Agents
         Map<String, AgentDefinition> agents = new LinkedHashMap<>();
         for (JsonNode a : root.get("agentServices")) {
             String id = a.get("serviceId").asText();
@@ -212,7 +204,6 @@ public class AgenticSimulationRunner {
                     a.has("replicas") ? a.get("replicas").asInt() : 1));
         }
 
-        // Workflow spec
         JsonNode simNode = root.get("simulation");
         String entryAgent = agents.keySet().iterator().next();
         WorkflowSpec workflow = new WorkflowSpec(
@@ -224,10 +215,9 @@ public class AgenticSimulationRunner {
         return new Topology(zones, links, llmProfiles, toolProfiles, agents, infraNodes, workflow);
     }
 
-    // ==========================================
-    // Output
-    // ==========================================
+    // ── Output ────────────────────────────────────────────────────
 
+    /** Prints the parsed configuration to stdout for verification. */
     private void printConfig(Topology topology, Map<String, Double> weights,
                              double durationMs, double arrivalRate) {
         System.out.println("--- Configuration ---");
@@ -252,6 +242,7 @@ public class AgenticSimulationRunner {
         System.out.println("---------------------");
     }
 
+    /** Prints aggregate simulation metrics (latency, cost, success rate) to stdout. */
     private void printSummary(TrajectoryCollector trace) {
         List<TrajectoryCollector.Row> completeRows = trace.rows().stream()
                 .filter(r -> "COMPLETE".equals(r.eventType()))

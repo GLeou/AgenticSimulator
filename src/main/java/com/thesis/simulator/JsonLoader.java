@@ -6,16 +6,18 @@ import com.thesis.simulator.Infrastructure.InfrastructureConfig;
 import org.springframework.core.io.ClassPathResource;
 import java.io.IOException;
 
+/**
+ * Loads simulation configuration from JSON classpath resources
+ * and deserializes them into their respective configuration objects.
+ */
 public class JsonLoader {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     public static InfrastructureConfig loadInfrastructure(String filename) throws IOException {
-        // Reads "infrastructure.json" -> Maps to the wrapper class containing the list
         return mapper.readValue(new ClassPathResource(filename).getFile(), InfrastructureConfig.class);
     }
 
     public static ApplicationConfig loadApplication(String filename) throws IOException {
-        // Reads "application.json" -> Maps to the wrapper class containing the lists
         return mapper.readValue(new ClassPathResource(filename).getFile(), ApplicationConfig.class);
     }
 }

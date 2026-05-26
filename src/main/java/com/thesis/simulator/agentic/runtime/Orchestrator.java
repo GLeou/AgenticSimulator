@@ -11,8 +11,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Entry point for tasks. Kicks off the first message and dispatches
- * subsequent events to the right agent.
+ * Central dispatcher for the agentic simulation. Submits new workflows
+ * and routes events to the appropriate {@link AgentService} instance.
  */
 @RequiredArgsConstructor
 public class Orchestrator {
@@ -26,7 +26,7 @@ public class Orchestrator {
         agents.put(agentId, service);
     }
 
-    /** Kick off a workflow. */
+    /** Initiates a new workflow by sending the initial user prompt to the entry agent. */
     public void submit(String workflowId, int promptTokens, double now) {
         var spec = topology.workflow();
         Message m = Message.create(
@@ -38,7 +38,7 @@ public class Orchestrator {
                        "prompt_tokens", promptTokens));
     }
 
-    /** Single dispatch entry point — wire this into your scheduler's main loop. */
+    /** Dispatches an event to the appropriate handler based on its type. */
     public void process(AgenticEvent ev) {
         if (ev instanceof AgenticEvent.AgentReceive e) {
             agents.get(e.agentId()).onReceive(e);
@@ -55,7 +55,7 @@ public class Orchestrator {
                            "total_cost_usd", e.totalCostUsd(),
                            "steps", e.totalSteps()));
         } else if (ev instanceof AgenticEvent.TaskSubmit) {
-            // Reserved for queued submissions — not used in happy path.
+            // Reserved for queued submissions; not yet implemented.
         }
     }
 }

@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
+/** End-to-end result of a completed request, including timing and latency metrics. */
 @Data
 @AllArgsConstructor
 @Builder

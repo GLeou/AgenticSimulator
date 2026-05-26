@@ -4,9 +4,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
 
+/** Wrapper for deserializing the infrastructure configuration JSON. */
 @Data
 @NoArgsConstructor
 public class InfrastructureConfig {
-    // Matches the JSON key "computingNodes"
     private List<ComputingNodes> computingNodes;
 }

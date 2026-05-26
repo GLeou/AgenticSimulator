@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/** Defines a microservice with its computational cost (total instructions) and node assignment. */
 @AllArgsConstructor
 @NoArgsConstructor
 @Data

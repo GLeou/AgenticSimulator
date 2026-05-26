@@ -4,6 +4,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
 
+/** Wrapper for deserializing the application-layer configuration JSON. */
 @Data
 @NoArgsConstructor
 public class ApplicationConfig {

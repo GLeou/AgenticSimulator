@@ -50,14 +50,7 @@ public class LLMEngine {
              + outputTokens * profile.pricePerOutputToken();
     }
 
-    // =========================================
-    // Gamma Distribution Sampler
-    // Marsaglia & Tsang's method (2000)
-    // Gamma is used instead of Gaussian because:
-    //  - It is always positive (latency can't be negative)
-    //  - It is right-skewed (occasional high-latency outliers)
-    //  - It matches empirical LLM latency distributions
-    // =========================================
+    // ── Gamma Distribution Sampler (Marsaglia & Tsang, 2000) ──────
 
     /**
      * Sample from Gamma distribution with the given shape and mean.

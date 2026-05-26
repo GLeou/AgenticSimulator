@@ -19,12 +19,12 @@ import lombok.RequiredArgsConstructor;
 import java.util.*;
 
 /**
- * Stateless agentic microservice. Per-workflow state is keyed by workflowId.
- * Implements the canonical agent step: build context → LLM call → branch on decision.
- *
- * Includes concurrency limits and queuing: when activeRequests ≥ maxConcurrency,
- * incoming requests wait in a FIFO queue and are dequeued when capacity frees up.
- * This models real-world container thread pools (like Tomcat/Jetty in v1 Pods).
+ * Simulated agentic microservice with per-workflow state keyed by workflow ID.
+ * <p>
+ * Implements the agent processing loop: receive message, build context, dispatch
+ * infrastructure compute, invoke the LLM, and branch on the decision (generate text,
+ * call a tool, delegate, or fail). Enforces concurrency limits with a FIFO queue,
+ * modeling real-world container thread pools.
  */
 @RequiredArgsConstructor
 public class AgentService {
@@ -37,7 +37,6 @@ public class AgentService {
     private final TrajectoryCollector trace;
     private final InfrastructureLayer infraLayer;
 
-    // --- Concurrency control (ported from v1's Pod model) ---
     private int activeRequests = 0;
     private final Queue<AgenticEvent.AgentReceive> waitingQueue = new LinkedList<>();
 
@@ -46,8 +45,8 @@ public class AgentService {
     private int infraJobCounter = 0;
 
     /**
-     * Step 1 + 2: receive message, check concurrency, build context, kick off LLM call.
-     * If at capacity, the request is queued and will be processed when a slot frees up.
+     * Receives an incoming message. If the agent is at capacity, the request is queued;
+     * otherwise it is processed immediately (context building + LLM dispatch).
      */
     public void onReceive(AgenticEvent.AgentReceive ev) {
         if (activeRequests >= def.maxConcurrency()) {
@@ -61,7 +60,7 @@ public class AgentService {
         processReceive(ev);
     }
 
-    /** Internal: actually processes the receive event (after capacity check). */
+    /** Processes the receive event: builds context, samples the LLM decision, and submits to infrastructure. */
     private void processReceive(AgenticEvent.AgentReceive ev) {
         WorkflowContext ctx = contexts.computeIfAbsent(
                 ev.workflowId(), wid -> new WorkflowContext(wid, ev.timeMs()));
@@ -73,14 +72,14 @@ public class AgentService {
                        "input_tokens", ev.message().inputTokens(),
                        "session_tokens", ctx.accumulatedInputTokens));
 
-        // Budget check
+        // Enforce step and token budget limits
         if (ctx.stepIndex > topology.workflow().maxSteps()
                 || ctx.accumulatedInputTokens > topology.workflow().maxTokens()) {
             terminate(ev.workflowId(), ev.timeMs(), "BUDGET_EXHAUSTED", ctx);
             return;
         }
 
-        // Sample LLM decision and latency (needed later after infra completes)
+        // Sample LLM decision, latency, and cost
         LLMProfile profile = topology.llmProfiles().get(def.llmProfileId());
         double networkOut = networkLatency(def.hostZone(), profile.hostZone());
         double networkBack = networkLatency(profile.hostZone(), def.hostZone());
@@ -93,12 +92,12 @@ public class AgentService {
         ctx.totalCostUsd += cost;
         ctx.accumulatedOutputTokens += outputTokens;
 
-        // Submit to infrastructure layer: compute local CPU cost (context building, parsing)
+        // Submit to infrastructure layer for local CPU compute (context building, parsing)
         String infraJobId = def.id() + "-infra-" + (++infraJobCounter);
         InfraResult infra = infraLayer.submitJob(def.id(), infraJobId, ev.timeMs(),
                 def.instructionsPerStep());
 
-        // Schedule InfraComplete — LLM call starts AFTER infra compute finishes
+        // LLM call begins only after infrastructure compute completes
         double infraCompleteAt = ev.timeMs() + infra.infraLatencyMs();
         scheduler.schedule(new AgenticEvent.InfraComplete(
                 infraCompleteAt, ev.workflowId(), def.id(), infraJobId,
@@ -114,15 +113,14 @@ public class AgentService {
                        "cost_usd", cost));
     }
 
-    /** Infrastructure compute completed — now dispatch the LLM call. */
+    /** Handles infrastructure compute completion and dispatches the LLM API call. */
     public void onInfraComplete(AgenticEvent.InfraComplete ev) {
-        // Release infrastructure resources (free CPU, dequeue next job)
         infraLayer.releaseJob(ev.infraJobId(), ev.timeMs());
 
         trace.log(ev.workflowId(), def.id(), "INFRA_COMPLETE", ev.timeMs(),
                 Map.of("infra_job_id", ev.infraJobId()));
 
-        // Now schedule the LLM call (agent → LLM → agent)
+        // Schedule LLM call: network out + inference + network back
         double completeAt = ev.timeMs() + ev.networkOut() + ev.inferenceMs() + ev.networkBack();
         scheduler.schedule(new AgenticEvent.LlmComplete(
                 completeAt, ev.workflowId(), def.id(),
@@ -138,7 +136,7 @@ public class AgentService {
                        "completes_at", completeAt));
     }
 
-    /** Step 4: branch on the LLM's decision. */
+    /** Branches on the LLM decision: generate text, call tool, delegate, or fail. */
     public void onLlmComplete(AgenticEvent.LlmComplete ev) {
         WorkflowContext ctx = contexts.get(ev.workflowId());
         AgentDecision d = ev.decision();
@@ -178,7 +176,7 @@ public class AgentService {
                        "completes_at", completeAt));
     }
 
-    /** Step 5: tool returns → loop back as a new AgentReceive (recursive step). */
+    /** Handles tool completion: on success, loops the result back as a new agent step. */
     public void onToolComplete(AgenticEvent.ToolComplete ev) {
         if (ev.errored()) {
             terminate(ev.workflowId(), ev.timeMs(), "TOOL_FAILURE",
@@ -188,8 +186,7 @@ public class AgentService {
         Message followUp = Message.create(
                 ev.toolId(), def.id(), ev.responseTokens(), "tool_result", ev.timeMs());
 
-        // Tool result loops back into the same agent — re-enter via processReceive
-        // (no need to re-check concurrency, this workflow already holds a slot)
+        // Re-enter directly (this workflow already holds a concurrency slot)
         processReceive(new AgenticEvent.AgentReceive(
                 ev.timeMs(), ev.workflowId(), def.id(), followUp));
 
@@ -197,10 +194,7 @@ public class AgentService {
                 Map.of("response_tokens", ev.responseTokens()));
     }
 
-    /**
-     * Terminate a workflow: record completion, free concurrency slot,
-     * and try to dequeue the next waiting request.
-     */
+    /** Terminates a workflow, frees the concurrency slot, and dequeues the next waiting request. */
     private void terminate(String workflowId, double now, String reason, WorkflowContext ctx) {
         if (ctx == null) ctx = new WorkflowContext(workflowId, now);
         scheduler.schedule(new AgenticEvent.WorkflowComplete(
@@ -213,10 +207,7 @@ public class AgentService {
         tryDequeue(now);
     }
 
-    /**
-     * If there are queued requests and we have capacity, dequeue and process.
-     * Mirrors v1's trySchedulePod() pattern.
-     */
+    /** Drains the waiting queue while concurrency slots are available. */
     private void tryDequeue(double now) {
         while (!waitingQueue.isEmpty() && activeRequests < def.maxConcurrency()) {
             AgenticEvent.AgentReceive queued = waitingQueue.poll();
@@ -226,7 +217,7 @@ public class AgentService {
                     Map.of("waited_ms", now - queued.timeMs(),
                            "queue_remaining", waitingQueue.size()));
 
-            // Re-create the event at current time (it waited in queue)
+            // Adjust event timestamp to reflect time spent waiting in queue
             AgenticEvent.AgentReceive updated = new AgenticEvent.AgentReceive(
                     now, queued.workflowId(), queued.agentId(), queued.message());
             processReceive(updated);

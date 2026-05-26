@@ -18,16 +18,15 @@ public class SimulatorApplication implements CommandLineRunner {
     @Override
     public void run(String... args) {
         try {
-            // Check if any argument is "agentic"
             boolean runAgentic = Arrays.stream(args)
                     .anyMatch(a -> "agentic".equalsIgnoreCase(a));
 
             if (runAgentic) {
-                // ===== V2: Agentic Simulation =====
+                // V2: Agentic simulation with LLM-driven decision-making
                 AgenticSimulationRunner runner = new AgenticSimulationRunner();
                 runner.run("agentic_config.json");
             } else {
-                // ===== V1: Kubernetes Microservices Simulation =====
+                // V1: Discrete-event Kubernetes microservices simulation
                 System.out.println("Running Kubernetes Simulation (v1)...");
                 System.out.println("(Pass 'agentic' as argument to run v2)");
                 System.out.println("Loading configuration...");
