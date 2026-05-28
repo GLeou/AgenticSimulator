@@ -1,192 +1,201 @@
-# Kubernetes Microservices Discrete Event Simulator (v1)
+# Kubernetes & Agentic Discrete Event Simulator
 
-This project is a Java-based, event-driven simulator built with Spring Boot. It models the behavior of microservices deployed in a Kubernetes-like environment, simulating realistic system dynamics such as CPU time-slicing, thread pool exhaustion, request queuing, and network latency.
+A Java-based discrete-event simulator for modeling microservice and LLM-based agentic workloads on edge/cloud infrastructure. Built with Spring Boot.
 
-> **🚀 The Vision: An Agentic Simulator** This v1 release lays the deterministic foundation for what will become a fully **Agentic Simulator**. By establishing a strict event loop, explicit state tracking, and a realistic environment, future iterations will introduce AI agents capable of observing the system state and making dynamic, intelligent decisions in real-time (e.g., intelligent load balancing, predictive auto-scaling, and chaos engineering).
+---
 
-* * *
+## Overview
 
-## Key Features
+This project provides two simulation modes:
 
--   **Event-Driven Architecture:** The simulation jumps precisely from event to event (Arrivals, Pod Finishes, Network Transfers) using a Priority Queue, ensuring high performance.
+### V1: Kubernetes Microservices Simulation
+Models traditional request/response microservices with:
+- CPU time-slicing and contention across shared nodes
+- Per-pod thread pools with configurable concurrency limits
+- Request queuing when pods are at capacity
+- Round-robin load balancing across pod replicas
+- Inter-service network latency based on payload size
+- Poisson-distributed traffic generation
 
--   **Concurrency & Time-Slicing:** Multiple requests run on the CPU simultaneously. The simulator dynamically adjusts the processing speed per job based on the number of active jobs sharing the node's CPU cores and frequency.
+### V2: Agentic Simulation
+Extends v1's infrastructure model with LLM-based agentic workflows:
+- Stochastic LLM inference (Gamma-distributed TTFT/TPOT latency)
+- Tool invocations with configurable latency and error rates
+- Agent decision loop: generate text, call tools, delegate, or fail
+- Token-based cost tracking (input/output pricing)
+- Zone-aware network latency (edge, cloud, fog)
+- **Multiple concurrent workloads** with independent arrival rates, token distributions, and budget constraints competing on the same infrastructure
 
--   **Thread Pools & Queuing:** Pods act like real web servers with a maximum concurrency limit. Incoming requests are placed in a waiting queue if a Pod is at capacity.
+The two layers compose: each agent step first incurs infrastructure cost (CPU contention from v1's physics), then dispatches the external LLM call.
 
--   **Load Balancing:** Deploys multiple replicas (Pods) per service and routes traffic using a Round-Robin strategy.
+---
 
--   **Realistic Traffic Generation:** Simulates incoming user traffic using a Poisson Process (Exponential Distribution) for random, realistic arrival gaps.
+## Architecture
 
--   **Metrics & Tracing:** Automatically tracks stopwatch metrics for requests and exports data to CSV files for Gantt chart visualization and queue monitoring.
+```
+V2 Workloads (chat-light, tool-heavy, ...)
+  |  each generates its own Poisson arrival stream
+  v
+Agents (LLM calls, tool invocations, decisions)
+  |  each step submits CPU work
+  v
+Infrastructure Layer (v1 physics)
+  pods, CPU time-slicing, queuing, contention
+```
 
-
-* * *
-
-## Architecture Overview
-
-The simulation is broken down into two main configuration domains:
-
-1.  **Infrastructure:** Defines the physical/virtual hardware constraints.
-
-    -   `ComputingNodes`: Represents servers with specific core counts, CPU frequencies, and network bandwidth limits.
-
-2.  **Application:** Defines the software topology.
-
-    -   `Services`: Represents microservices with a specific workload (total instructions to execute).
-
-    -   `ServiceCalls`: Represents the communication edges between services, including the payload size (bytes) transferred over the network.
-
-
-* * *
+---
 
 ## Prerequisites
 
--   **Java 17+** (or compatible version)
+- **Java 21+**
+- **Maven**
+- **Lombok plugin** enabled in your IDE
+- **Python 3.x** with `pandas` and `matplotlib` (for visualization)
+  ```
+  pip install pandas matplotlib
+  ```
+- **fpdf2** (for regenerating the tutorial PDF)
+  ```
+  pip install fpdf2
+  ```
 
--   **Maven** (if running via command line)
-
--   **IntelliJ IDEA** (Optional, but recommended. Community or Ultimate edition)
-
--   **Lombok plugin** installed and enabled in your IDE to process the `@Data` and `@Builder` annotations.
-
--   **Python 3.x** (for running the visualization script) along with required plotting libraries (e.g., `pip install pandas matplotlib`).
-
-
-* * *
+---
 
 ## Configuration
 
-The simulator relies on Spring Boot properties and two JSON files. Ensure these are placed in your `src/main/resources` directory.
+### V1 Configuration
 
-### 1\. `application.properties`
+Located in `src/main/resources/`:
 
-Sets the Spring application name.
+- **`infrastructure.json`** — Defines computing nodes (cores, frequency, bandwidth)
+- **`application.json`** — Defines services (instructions per request) and service calls (data transfer size)
 
-Properties
+### V2 Configuration
 
-    spring.application.name=Simulator
+Located in `src/main/resources/agentic_config.json`. Key sections:
 
-### 2\. `infrastructure.json`
+- **`nodes`** — Infrastructure nodes with zone, cores, frequency
+- **`zonePairLatencies`** — Network latency between zones
+- **`llmModels`** — LLM profiles (TTFT/TPOT distributions, token pricing, decision weights)
+- **`tools`** — External tool profiles (latency, error rate, response tokens)
+- **`agentServices`** — Agent definitions (LLM, tools, concurrency, replicas, CPU cost per step)
+- **`simulation`** — Global parameters (duration, random seed)
+- **`workloads`** — One or more workload definitions:
 
-Defines the cluster's nodes, including their cores, frequency, and bandwidth.
+```json
+"workloads": [
+  {
+    "name": "chat-light",
+    "entryAgent": "agent-1",
+    "arrivalRate": 0.3,
+    "userMessageTokensMean": 50.0,
+    "userMessageTokensStdDev": 20.0,
+    "maxStepsPerWorkflow": 5,
+    "maxTokensPerWorkflow": 4000
+  },
+  {
+    "name": "tool-heavy",
+    "entryAgent": "agent-1",
+    "arrivalRate": 0.2,
+    "userMessageTokensMean": 200.0,
+    "userMessageTokensStdDev": 60.0,
+    "maxStepsPerWorkflow": 15,
+    "maxTokensPerWorkflow": 50000
+  }
+]
+```
 
-JSON
+Each workload generates an independent Poisson traffic stream. All workloads compete for the same infrastructure, producing realistic contention.
 
-    {
-      "computingNodes": [
-        {
-          "node_id": 1,
-          "cores": 4,
-          "frequency": 3000000000.0,
-          "bandwidth": 1000000000.0
-        },
-        {
-          "node_id": 2,
-          "cores": 1,
-          "frequency": 1000000000.0,
-          "bandwidth": 1000000000.0
-        },
-        {
-          "node_id": 3,
-          "cores": 2,
-          "frequency": 2000000000.0,
-          "bandwidth": 1000000000.0
-        }
-      ]
-    }
-
-### 3\. `application.json`
-
-Defines the services (instructions per request) and how they communicate (bytes transferred).
-
-JSON
-
-    {
-      "services": [
-        {
-          "service_id": 1,
-          "totalInstructions": 6000000000,
-          "nodeId": 1
-        },
-        {
-          "service_id": 2,
-          "totalInstructions": 5000000000,
-          "nodeId": 2
-        },
-        {
-          "service_id": 3,
-          "totalInstructions": 4000000000,
-          "nodeId": 3
-        }
-      ],
-      "serviceCalls": [
-        {
-          "callerId": 1,
-          "calleeId": 2,
-          "bytes": 200000000
-        },
-        {
-          "callerId": 2,
-          "calleeId": 3,
-          "bytes": 200000000
-        }
-      ]
-    }
-
-* * *
+---
 
 ## How to Run
 
-You can run the simulator either through an IDE or directly from your terminal. By default, the simulation runs for `T = 100.0` seconds. You can change this value inside the `run` method of `SimulatorApplication.java`.
+### V1: Kubernetes Simulation
 
-### Option A: Running via Command Line (Maven)
+```bash
+mvn spring-boot:run
+```
 
-If you prefer not to use an IDE, you can easily run the application using Maven:
+### V2: Agentic Simulation
 
-1.  Open your terminal or command prompt.
+```bash
+mvn spring-boot:run -Dspring-boot.run.arguments=agentic
+```
 
-2.  Navigate to the root directory of the project (where the `pom.xml` file is located).
+Or in IntelliJ IDEA: add `agentic` to **Run Configuration > Program Arguments**.
 
-3.  Execute the following Spring Boot command:
+---
 
-    Bash
+## Output
 
-        mvn spring-boot:run
+### V1 Output
+- `simulation_trace_k8s.csv` — Execution timeline (Gantt chart data)
+- `queue_trace.csv` — Queue depth per pod over time
 
-4.  The project will compile, and you will see the simulation logs outputting directly in your terminal.
+### V2 Output
+- `agentic_trajectory.csv` — Full event trajectory with per-workflow metrics, including workload tags
+- Console summary with aggregate and per-workload statistics
 
+---
 
-### Option B: Running in IntelliJ IDEA
+## Visualization
 
-1.  **Open the Project:** Launch IntelliJ IDEA, click **Open**, and select the root folder of your project.
+### V1 Visualization
+```bash
+python visualize2.py
+```
+Produces a Gantt chart of request execution/wait times and queue depth over time.
 
-2.  **Enable Annotation Processing:** Because the project uses Lombok, go to **File > Settings** (or **IntelliJ IDEA > Settings** on Mac), navigate to **Build, Execution, Deployment > Compiler > Annotation Processors**, and check the box for **Enable annotation processing**.
+### V2 Visualization
+```bash
+python visualize_agentic.py
+```
+Produces per-workload analysis charts:
+- **Latency distribution** — Histogram and boxplot per workload
+- **Cost & steps** — Per-workflow cost scatter, step count distribution
+- **Timeline & outcomes** — Cumulative completions, completion reason breakdown
+- **Infrastructure queuing** — Agent queue depth, wait time distribution
+- **Infrastructure latency** — Per-step infra latency, compute vs queue wait
 
-3.  **Locate the Main Class:** In the Project tool window (left side), navigate to `src/main/java/com/thesis/simulator/` and find `SimulatorApplication.java`.
+### Regenerate Tutorial PDF
+```bash
+python generate_tutorial_pdf.py
+```
+Generates `Agentic_Simulator_Tutorial.pdf` with full code walkthrough.
 
-4.  **Run the Application:** Right-click on `SimulatorApplication.java` and select **Run 'SimulatorApplication.main()'**.
+---
 
+## Project Structure
 
-* * *
+```
+src/main/java/com/thesis/simulator/
+  SimulatorApplication.java          # Entry point (v1 or v2 based on args)
+  Simulation.java                    # V1 discrete-event simulator
+  JsonLoader.java                    # JSON config loader for v1
+  TraceEvent.java, RequestResult.java
 
-## Simulation Outputs & Visualization
+  Application/                       # V1 service topology
+    ApplicationConfig, Services, ServiceCall
 
-Upon completion, the simulator generates two CSV files in the root directory of your project:
+  Infrastructure/                    # V1 node definitions
+    InfrastructureConfig, ComputingNodes, NetworkNodes
 
--   **`simulation_trace_k8s.csv`**: Contains the timeline of events for every request (`RequestId`, `Type`, `Name`, `StartTime`, `EndTime`).
-
--   **`queue_trace.csv`**: Logs the exact size of every Pod's waiting queue at specific timestamps.
-
-
-### Generating Visualizations
-
-We use a Python script (`visualize2.py`) to parse these generated CSVs and output visual representations of the system's behavior.
-
-To generate the graphs, open your terminal in the project root directory and run:
-
-Bash
-
-    python visualize2.py
-
-_Note: Ensure you have your Python environment set up with the necessary data manipulation and plotting libraries (like `pandas` and `matplotlib`) before running the script._
+  agentic/                           # V2 agentic simulation
+    AgenticSimulationRunner.java     # Main runner, config parsing, traffic gen
+    config/AgenticConfig.java        # All data records (Topology, WorkloadDefinition, ...)
+    engine/
+      LLMEngine.java                 # Stochastic LLM surrogate (Gamma latency)
+      AgentDecision.java             # Decision enum + record
+      ToolPool.java                  # Stochastic tool calls
+    events/AgenticEvent.java         # Sealed event hierarchy
+    infra/
+      InfrastructureLayer.java       # CPU time-slicing, pod queuing (from v1)
+      InfraResult.java               # Latency breakdown
+    runtime/
+      Orchestrator.java              # Event dispatcher, workload registry
+      AgentService.java              # Agent loop with per-workload budgets
+      Message.java                   # Token-carrying message
+    scheduler/EventScheduler.java    # Priority queue event loop
+    metrics/TrajectoryCollector.java  # CSV trajectory logger
+```
