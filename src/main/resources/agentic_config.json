@@ -5,7 +5,6 @@
       "zone": "CLOUD",
       "cores": 8,
       "frequencyHz": 3000000000.0,
-      "vramGB": 80,
       "bandwidthBytesPerSec": 1250000000.0
     }
   ],
@@ -14,7 +13,7 @@
   ],
   "agentServices": [
     {
-      "serviceId": "agent-1",
+      "serviceId": "agent-chat",
       "nodeId": 1,
       "modelId": "gpt-4o",
       "maxConcurrency": 10,
@@ -23,6 +22,17 @@
       "toolSchemaTokens": 200,
       "instructionsPerStep": 50000000,
       "replicas": 2
+    },
+    {
+      "serviceId": "agent-tool",
+      "nodeId": 1,
+      "modelId": "gpt-4o",
+      "maxConcurrency": 5,
+      "hostZone": "CLOUD",
+      "systemPromptTokens": 500,
+      "toolSchemaTokens": 200,
+      "instructionsPerStep": 50000000,
+      "replicas": 3
     }
   ],
   "llmModels": [
@@ -57,11 +67,26 @@
   ],
   "simulation": {
     "durationSeconds": 100.0,
-    "arrivalRate": 0.5,
-    "userMessageTokensMean": 50.0,
-    "userMessageTokensStdDev": 20.0,
-    "maxStepsPerWorkflow": 10,
-    "maxTokensPerWorkflow": 10000,
     "seed": 42
-  }
+  },
+  "workloads": [
+    {
+      "name": "chat-light",
+      "entryAgent": "agent-chat",
+      "arrivalRate": 3.0,
+      "userMessageTokensMean": 50.0,
+      "userMessageTokensStdDev": 20.0,
+      "maxStepsPerWorkflow": 5,
+      "maxTokensPerWorkflow": 5000
+    },
+    {
+      "name": "tool-heavy",
+      "entryAgent": "agent-tool",
+      "arrivalRate": 2.0,
+      "userMessageTokensMean": 200.0,
+      "userMessageTokensStdDev": 60.0,
+      "maxStepsPerWorkflow": 15,
+      "maxTokensPerWorkflow": 5000
+    }
+  ]
 }

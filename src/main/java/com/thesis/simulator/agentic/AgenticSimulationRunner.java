@@ -15,20 +15,21 @@ import com.thesis.simulator.agentic.scheduler.EventScheduler;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Entry point for the agentic simulation (v2).
  * <p>
  * Loads the experiment configuration from JSON, constructs the simulation topology
  * (infrastructure, agents, LLM profiles, tools), generates Poisson-distributed
- * traffic, and executes the discrete-event loop. Agent decisions are sampled
- * stochastically using a configurable weighted-random policy. Results are
- * exported as a trajectory CSV for analysis.
+ * traffic for each configured workload, and executes the discrete-event loop.
+ * Multiple workloads run concurrently on the same infrastructure, producing
+ * realistic resource contention. Results are exported as a trajectory CSV.
  */
 public class AgenticSimulationRunner {
 
     public void run(String configPath) throws Exception {
-        System.out.println("=== Starting Agentic Simulation (v2 — Refactored) ===");
+        System.out.println("=== Starting Agentic Simulation (v2) ===");
 
         // Load and parse configuration
         ObjectMapper mapper = new ObjectMapper();
@@ -39,9 +40,6 @@ public class AgenticSimulationRunner {
         Topology topology = parseTopology(root);
         JsonNode simNode = root.get("simulation");
         double T = simNode.get("durationSeconds").asDouble() * 1000.0; // convert to ms
-        double arrivalRate = simNode.get("arrivalRate").asDouble();
-        double userMsgMean = simNode.get("userMessageTokensMean").asDouble();
-        double userMsgStdDev = simNode.get("userMessageTokensStdDev").asDouble();
         long seed = simNode.get("seed").asLong();
 
         Random rng = new Random(seed);
@@ -51,7 +49,6 @@ public class AgenticSimulationRunner {
         Map<String, Double> decisionWeights = new LinkedHashMap<>();
         weightsNode.fields().forEachRemaining(e -> decisionWeights.put(e.getKey(), e.getValue().asDouble()));
 
-        // Get available tool IDs for CALL_TOOL decisions
         List<String> allToolIds = new ArrayList<>(topology.tools().keySet());
 
         LLMEngine llm = new LLMEngine(new Random(seed), (inputTokens, availableTools) -> {
@@ -90,35 +87,53 @@ public class AgenticSimulationRunner {
         InfrastructureLayer infraLayer = new InfrastructureLayer(
                 topology.infraNodes(), topology.agents());
 
-        // Register all agents
+        // Register all agents (pass workload lookup via orchestrator)
         for (Map.Entry<String, AgentDefinition> entry : topology.agents().entrySet()) {
             AgentService agent = new AgentService(
-                    entry.getValue(), topology, llm, tools, scheduler, trace, infraLayer);
+                    entry.getValue(), topology, llm, tools, scheduler, trace, infraLayer,
+                    orchestrator::getWorkload);
             orchestrator.registerAgent(entry.getKey(), agent);
         }
 
-        printConfig(topology, decisionWeights, T, arrivalRate);
+        printConfig(topology, decisionWeights, T);
 
-        // Generate Poisson-distributed arrival events over the simulation duration
-        double currentArrivalMs = 0.0;
+        // Generate per-workload Poisson arrival streams
         int reqId = 1;
+        // Collect all arrivals across workloads, then sort by time
+        List<ScheduledArrival> allArrivals = new ArrayList<>();
 
-        while (currentArrivalMs <= T) {
-            int promptTokens = (int) Math.max(10,
-                    Math.round(userMsgMean + rng.nextGaussian() * userMsgStdDev));
+        for (WorkloadDefinition workload : topology.workloads()) {
+            double currentArrivalMs = 0.0;
+            double lambdaMs = workload.arrivalRate() / 1000.0;
 
-            orchestrator.submit("wf-" + String.format("%04d", reqId), promptTokens, currentArrivalMs);
-            reqId++;
+            while (currentArrivalMs <= T) {
+                int promptTokens = (int) Math.max(10,
+                        Math.round(workload.userMessageTokensMean()
+                                + rng.nextGaussian() * workload.userMessageTokensStdDev()));
 
-            // Exponential inter-arrival time: gap = -ln(U) / lambda_ms
-            double lambdaMs = arrivalRate / 1000.0;
-            double u = 1.0 - rng.nextDouble();
-            currentArrivalMs += -Math.log(u) / lambdaMs;
+                String wfId = "wf-" + workload.name() + "-" + String.format("%04d", reqId);
+                allArrivals.add(new ScheduledArrival(currentArrivalMs, wfId, workload, promptTokens));
+                reqId++;
+
+                double u = 1.0 - rng.nextDouble();
+                currentArrivalMs += -Math.log(u) / lambdaMs;
+            }
         }
 
-        int totalRequests = reqId - 1;
+        // Sort all arrivals chronologically and submit
+        allArrivals.sort(Comparator.comparingDouble(a -> a.timeMs));
+        for (ScheduledArrival arrival : allArrivals) {
+            orchestrator.submit(arrival.workflowId, arrival.workload, arrival.promptTokens, arrival.timeMs);
+        }
+
+        int totalRequests = allArrivals.size();
         System.out.println("Generated " + totalRequests + " requests over "
-                + String.format("%.0f", T / 1000.0) + "s (lambda=" + arrivalRate + "/s)");
+                + String.format("%.0f", T / 1000.0) + "s across "
+                + topology.workloads().size() + " workload(s):");
+        for (WorkloadDefinition w : topology.workloads()) {
+            long count = allArrivals.stream().filter(a -> a.workload.name().equals(w.name())).count();
+            System.out.printf("  %s: %d requests (lambda=%.1f/s)%n", w.name(), count, w.arrivalRate());
+        }
 
         // Execute the discrete-event loop
         scheduler.run(orchestrator::process);
@@ -128,8 +143,12 @@ public class AgenticSimulationRunner {
         trace.writeCsv(traceOut);
         System.out.println("Trajectory saved to " + traceOut.toAbsolutePath());
 
-        printSummary(trace);
+        printSummary(trace, topology.workloads());
     }
+
+    /** Holds a pre-generated arrival for sorting across workloads. */
+    private record ScheduledArrival(double timeMs, String workflowId,
+                                     WorkloadDefinition workload, int promptTokens) {}
 
     // ── Configuration Parsing ──────────────────────────────────────
 
@@ -203,22 +222,26 @@ public class AgenticSimulationRunner {
                     a.has("replicas") ? a.get("replicas").asInt() : 1));
         }
 
-        JsonNode simNode = root.get("simulation");
-        String entryAgent = agents.keySet().iterator().next();
-        WorkflowSpec workflow = new WorkflowSpec(
-                entryAgent,
-                simNode.has("userMessageTokensMean") ? simNode.get("userMessageTokensMean").asInt() : 500,
-                simNode.get("maxStepsPerWorkflow").asInt(),
-                simNode.get("maxTokensPerWorkflow").asInt());
+        // Parse workloads array
+        List<WorkloadDefinition> workloads = new ArrayList<>();
+        for (JsonNode w : root.get("workloads")) {
+            workloads.add(new WorkloadDefinition(
+                    w.get("name").asText(),
+                    w.get("entryAgent").asText(),
+                    w.get("arrivalRate").asDouble(),
+                    w.get("userMessageTokensMean").asDouble(),
+                    w.get("userMessageTokensStdDev").asDouble(),
+                    w.get("maxStepsPerWorkflow").asInt(),
+                    w.get("maxTokensPerWorkflow").asInt()));
+        }
 
-        return new Topology(zones, links, llmProfiles, toolProfiles, agents, infraNodes, workflow);
+        return new Topology(zones, links, llmProfiles, toolProfiles, agents, infraNodes, workloads);
     }
 
     // ── Output ────────────────────────────────────────────────────
 
     /** Prints the parsed configuration to stdout for verification. */
-    private void printConfig(Topology topology, Map<String, Double> weights,
-                             double durationMs, double arrivalRate) {
+    private void printConfig(Topology topology, Map<String, Double> weights, double durationMs) {
         System.out.println("--- Configuration ---");
         System.out.println("Zones: " + topology.zones().stream().map(Zone::id).toList());
         topology.infraNodes().forEach(n ->
@@ -235,14 +258,20 @@ public class AgenticSimulationRunner {
         topology.tools().values().forEach(t ->
                 System.out.printf("  Tool '%s' | zone=%s | latency~N(%.0f,%.0f)ms | errorRate=%.1f%%%n",
                         t.id(), t.hostZone(), t.latencyMeanMs(), t.latencyStdMs(), t.errorRate() * 100));
+        System.out.println("Workloads:");
+        for (WorkloadDefinition w : topology.workloads()) {
+            System.out.printf("  '%s' | entry=%s | lambda=%.1f/s | tokens~N(%.0f,%.0f) | maxSteps=%d | maxTokens=%d%n",
+                    w.name(), w.entryAgent(), w.arrivalRate(),
+                    w.userMessageTokensMean(), w.userMessageTokensStdDev(),
+                    w.maxStepsPerWorkflow(), w.maxTokensPerWorkflow());
+        }
         System.out.println("Decision weights: " + weights);
-        System.out.printf("Duration: %.0fs | Arrival rate: %.1f req/s%n",
-                durationMs / 1000.0, arrivalRate);
+        System.out.printf("Duration: %.0fs%n", durationMs / 1000.0);
         System.out.println("---------------------");
     }
 
-    /** Prints aggregate simulation metrics (latency, cost, success rate) to stdout. */
-    private void printSummary(TrajectoryCollector trace) {
+    /** Prints aggregate and per-workload simulation metrics to stdout. */
+    private void printSummary(TrajectoryCollector trace, List<WorkloadDefinition> workloads) {
         List<TrajectoryCollector.Row> completeRows = trace.rows().stream()
                 .filter(r -> "COMPLETE".equals(r.eventType()))
                 .toList();
@@ -252,33 +281,51 @@ public class AgenticSimulationRunner {
             return;
         }
 
-        DoubleSummaryStatistics latencyStats = completeRows.stream()
+        System.out.println("\n=== Agentic Simulation Summary ===");
+        printWorkloadStats("ALL", completeRows);
+
+        // Per-workload breakdown
+        Map<String, List<TrajectoryCollector.Row>> byWorkload = completeRows.stream()
+                .collect(Collectors.groupingBy(r -> {
+                    Object wl = r.payload().get("workload");
+                    return wl != null ? wl.toString() : "unknown";
+                }));
+
+        for (WorkloadDefinition w : workloads) {
+            List<TrajectoryCollector.Row> rows = byWorkload.getOrDefault(w.name(), List.of());
+            if (!rows.isEmpty()) {
+                printWorkloadStats(w.name(), rows);
+            }
+        }
+
+        System.out.printf(Locale.US, "Total trace events:   %d%n", trace.rows().size());
+        System.out.println("==================================");
+    }
+
+    private void printWorkloadStats(String label, List<TrajectoryCollector.Row> rows) {
+        DoubleSummaryStatistics latencyStats = rows.stream()
                 .mapToDouble(r -> ((Number) r.payload().get("total_latency_ms")).doubleValue())
                 .summaryStatistics();
 
-        double totalCost = completeRows.stream()
+        double totalCost = rows.stream()
                 .mapToDouble(r -> ((Number) r.payload().get("total_cost_usd")).doubleValue())
                 .sum();
 
-        long successCount = completeRows.stream()
+        long successCount = rows.stream()
                 .filter(r -> "SUCCESS".equals(r.payload().get("reason")))
                 .count();
 
-        int totalSteps = completeRows.stream()
+        int totalSteps = rows.stream()
                 .mapToInt(r -> ((Number) r.payload().get("steps")).intValue())
                 .sum();
 
-        System.out.println("\n=== Agentic Simulation Summary ===");
-        System.out.printf(Locale.US, "Completed workflows:  %d%n", completeRows.size());
-        System.out.printf(Locale.US, "  Successful:         %d (%.0f%%)%n",
-                successCount, 100.0 * successCount / completeRows.size());
-        System.out.printf(Locale.US, "Avg latency:          %.1f ms (%.3f s)%n",
+        System.out.printf(Locale.US, "--- %s ---%n", label);
+        System.out.printf(Locale.US, "  Completed:    %d | Successful: %d (%.0f%%)%n",
+                rows.size(), successCount, 100.0 * successCount / rows.size());
+        System.out.printf(Locale.US, "  Avg latency:  %.1f ms (%.3f s)%n",
                 latencyStats.getAverage(), latencyStats.getAverage() / 1000.0);
-        System.out.printf(Locale.US, "Max latency:          %.1f ms (%.3f s)%n",
+        System.out.printf(Locale.US, "  Max latency:  %.1f ms (%.3f s)%n",
                 latencyStats.getMax(), latencyStats.getMax() / 1000.0);
-        System.out.printf(Locale.US, "Total cost:           $%.4f%n", totalCost);
-        System.out.printf(Locale.US, "Total agent steps:    %d%n", totalSteps);
-        System.out.printf(Locale.US, "Total trace events:   %d%n", trace.rows().size());
-        System.out.println("==================================");
+        System.out.printf(Locale.US, "  Total cost:   $%.4f | Total steps: %d%n", totalCost, totalSteps);
     }
 }

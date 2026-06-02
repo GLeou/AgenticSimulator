@@ -116,20 +116,23 @@ toc = [
     "3. Package Structure",
     "4. Configuration Layer (config/AgenticConfig.java)",
     "5. JSON Configuration File (agentic_config.json)",
-    "6. Event System (events/AgenticEvent.java)",
-    "7. Event Scheduler (scheduler/EventScheduler.java)",
-    "8. Stochastic LLM Engine (engine/LLMEngine.java)",
-    "9. Agent Decision Model (engine/AgentDecision.java)",
-    "10. Tool Pool (engine/ToolPool.java)",
-    "11. Infrastructure Layer (infra/InfrastructureLayer.java)",
-    "12. Agent Service (runtime/AgentService.java)",
-    "13. Orchestrator (runtime/Orchestrator.java)",
-    "14. Message Record (runtime/Message.java)",
-    "15. Trajectory Collector (metrics/TrajectoryCollector.java)",
-    "16. Simulation Runner (AgenticSimulationRunner.java)",
-    "17. Entry Point (SimulatorApplication.java)",
-    "18. End-to-End Flow Example",
-    "19. Key Design Decisions",
+    "6. Multiple Agents & Workloads",
+    "7. Event System (events/AgenticEvent.java)",
+    "8. Event Scheduler (scheduler/EventScheduler.java)",
+    "9. Stochastic LLM Engine (engine/LLMEngine.java)",
+    "10. Agent Decision Model (engine/AgentDecision.java)",
+    "11. Tool Pool (engine/ToolPool.java)",
+    "12. Infrastructure Layer (infra/InfrastructureLayer.java)",
+    "13. Agent Service (runtime/AgentService.java)",
+    "14. Orchestrator (runtime/Orchestrator.java)",
+    "15. Message Record (runtime/Message.java)",
+    "16. Trajectory Collector (metrics/TrajectoryCollector.java)",
+    "17. Simulation Runner (AgenticSimulationRunner.java)",
+    "18. Entry Point (SimulatorApplication.java)",
+    "19. End-to-End Flow Example (Single Workflow)",
+    "20. End-to-End Flow: Multiple Workloads Under Contention",
+    "21. Key Design Decisions",
+    "22. Visualization",
 ]
 for item in toc:
     pdf.bullet(item)
@@ -151,7 +154,9 @@ pdf.body_text(
     "- How does placing an agent on the edge vs. cloud affect end-to-end latency?\n"
     "- What is the cost of running N concurrent agentic workflows per second?\n"
     "- How do concurrency limits and queuing affect tail latency?\n"
-    "- What happens when tools fail or have high latency?"
+    "- What happens when tools fail or have high latency?\n"
+    "- How do multiple agents with different workloads compete for shared infrastructure?\n"
+    "- What is the optimal number of agent replicas for a given traffic mix?"
 )
 pdf.body_text(
     "It is the v2 evolution of a Kubernetes microservice simulator (v1). While v1 modeled "
@@ -189,16 +194,18 @@ pdf.body_text(
 pdf.section_title("Component Wiring Diagram")
 pdf.code_block(
     "AgenticSimulationRunner\n"
-    "  |-- loads JSON config --> Topology\n"
+    "  |-- loads JSON config --> Topology (N agents, M workloads)\n"
     "  |-- creates LLMEngine (stochastic LLM surrogate)\n"
     "  |-- creates ToolPool  (stochastic tool surrogate)\n"
     "  |-- creates InfrastructureLayer (v1 CPU/queue model)\n"
     "  |-- creates EventScheduler (priority queue)\n"
     "  |-- creates TrajectoryCollector (CSV logger)\n"
-    "  |-- creates Orchestrator (event router)\n"
-    "  |      |-- registers AgentService(s)\n"
+    "  |-- creates Orchestrator (event router + workload registry)\n"
+    "  |      |-- registers AgentService for each agent in config\n"
+    "  |      |-- maps workflowId -> WorkloadDefinition\n"
     "  |\n"
-    "  |-- generates Poisson traffic (workflow submissions)\n"
+    "  |-- generates per-workload Poisson traffic streams\n"
+    "  |-- merges & submits all arrivals chronologically\n"
     "  |-- runs event loop: scheduler.run(orchestrator::process)\n"
     "  |-- exports trajectory CSV"
 )
@@ -394,7 +401,7 @@ pdf.body_text(
     "are deployed (round-robin across nodes), matching v1's pod deployment model."
 )
 
-pdf.section_title("Topology & WorkflowSpec")
+pdf.section_title("Topology & WorkloadDefinition")
 pdf.code_block(
     "public record Topology(\n"
     "    List<Zone> zones,\n"
@@ -403,17 +410,24 @@ pdf.code_block(
     "    Map<String, ToolProfile> tools,\n"
     "    Map<String, AgentDefinition> agents,\n"
     "    List<InfraNode> infraNodes,\n"
-    "    WorkflowSpec workflow\n"
+    "    List<WorkloadDefinition> workloads\n"
     ") {}\n\n"
-    "public record WorkflowSpec(\n"
-    "    String entryAgent, int initialPromptTokens,\n"
-    "    int maxSteps, int maxTokens\n"
+    "public record WorkloadDefinition(\n"
+    "    String name,\n"
+    "    String entryAgent,\n"
+    "    double arrivalRate,\n"
+    "    double userMessageTokensMean,\n"
+    "    double userMessageTokensStdDev,\n"
+    "    int maxStepsPerWorkflow,\n"
+    "    int maxTokensPerWorkflow\n"
     ") {}"
 )
 pdf.body_text(
     "Topology bundles the entire experiment configuration including infrastructure nodes. "
-    "WorkflowSpec defines safety limits: "
-    "max steps per workflow (prevents infinite loops) and max tokens (budget cap)."
+    "WorkloadDefinition defines a distinct traffic type with its own arrival rate, "
+    "token distribution, entry agent, and budget constraints (max steps and max tokens). "
+    "Multiple workloads run concurrently on the same infrastructure, producing realistic "
+    "resource contention between different request types."
 )
 
 
@@ -484,47 +498,224 @@ pdf.code_block(
 pdf.body_text("A search tool with ~200ms latency returning ~300 tokens. 0% error rate.")
 
 pdf.section_title("Agent Services")
+pdf.body_text(
+    "The agentServices array accepts any number of agents. Each agent is an independent "
+    "service with its own concurrency pool, LLM model, tools, and replica count. "
+    "Adding a new agent is purely a config change - no code modification required."
+)
 pdf.code_block(
-    '"agentServices": [{\n'
-    '  "serviceId": "agent-1",\n'
-    '  "nodeId": 1, "modelId": "gpt-4o",\n'
-    '  "maxConcurrency": 10, "hostZone": "CLOUD",\n'
-    '  "instructionsPerStep": 50000000,\n'
-    '  "replicas": 2\n'
-    '}]'
+    '"agentServices": [\n'
+    '  {\n'
+    '    "serviceId": "agent-chat",\n'
+    '    "nodeId": 1, "modelId": "gpt-4o",\n'
+    '    "maxConcurrency": 10, "hostZone": "CLOUD",\n'
+    '    "instructionsPerStep": 50000000,\n'
+    '    "replicas": 2\n'
+    '  },\n'
+    '  {\n'
+    '    "serviceId": "agent-tool",\n'
+    '    "nodeId": 1, "modelId": "gpt-4o",\n'
+    '    "maxConcurrency": 5, "hostZone": "CLOUD",\n'
+    '    "instructionsPerStep": 50000000,\n'
+    '    "replicas": 3\n'
+    '  }\n'
+    ']'
 )
 pdf.body_text(
     "Each agent has infrastructure properties:\n"
     "- instructionsPerStep: 50M instructions of CPU work per step (context building, "
     "prompt formatting, response parsing). On an 8-core 3GHz node with no contention, "
     "this takes ~2ms. Under heavy load with CPU sharing, it takes longer.\n"
-    "- replicas: 2 pod instances deployed round-robin across infrastructure nodes."
+    "- replicas: number of pod instances deployed round-robin across infrastructure nodes.\n"
+    "- maxConcurrency: thread pool size per replica.\n\n"
+    "Agents run independently but share physical nodes. agent-chat (2x10 = 20 slots) and "
+    "agent-tool (3x5 = 15 slots) have separate queues, but their CPU work competes on "
+    "the same hardware."
 )
 
-pdf.section_title("Simulation Parameters")
+pdf.section_title("Simulation Parameters & Workloads")
 pdf.code_block(
     '"simulation": {\n'
     '  "durationSeconds": 100.0,\n'
-    '  "arrivalRate": 0.5,\n'
-    '  "userMessageTokensMean": 50.0,\n'
-    '  "userMessageTokensStdDev": 20.0,\n'
-    '  "maxStepsPerWorkflow": 10,\n'
-    '  "maxTokensPerWorkflow": 10000,\n'
     '  "seed": 42\n'
-    '}'
+    '}\n\n'
+    '"workloads": [\n'
+    '  {\n'
+    '    "name": "chat-light",\n'
+    '    "entryAgent": "agent-chat",\n'
+    '    "arrivalRate": 3.0,\n'
+    '    "userMessageTokensMean": 50.0,\n'
+    '    "userMessageTokensStdDev": 20.0,\n'
+    '    "maxStepsPerWorkflow": 5,\n'
+    '    "maxTokensPerWorkflow": 4000\n'
+    '  },\n'
+    '  {\n'
+    '    "name": "tool-heavy",\n'
+    '    "entryAgent": "agent-tool",\n'
+    '    "arrivalRate": 2.0,\n'
+    '    "userMessageTokensMean": 200.0,\n'
+    '    "userMessageTokensStdDev": 60.0,\n'
+    '    "maxStepsPerWorkflow": 15,\n'
+    '    "maxTokensPerWorkflow": 50000\n'
+    '  }\n'
+    ']'
 )
 pdf.body_text(
-    "Run for 100 seconds of simulated time. Users arrive at 0.5 requests/second "
-    "(Poisson process). Each user message is ~50 tokens. Workflows are capped at "
-    "10 agent steps or 10,000 tokens. Seed=42 for reproducibility."
+    "The simulation block defines global parameters (duration, seed). "
+    "The workloads array defines one or more concurrent traffic types. "
+    "Each workload has its own Poisson arrival rate, token distribution, entry agent, "
+    "and budget constraints (max steps and max tokens). The entryAgent field routes "
+    "each workload to a specific agent.\n\n"
+    "In this example, 'chat-light' routes to agent-chat (3.0/s, ~50 tokens, max 5 steps) "
+    "while 'tool-heavy' routes to agent-tool (2.0/s, ~200 tokens, max 15 steps). "
+    "Both agents share the same physical node, creating CPU contention while maintaining "
+    "separate concurrency pools. You can add as many workloads and agents as needed."
 )
 
 
 # =============================================
-# 6. EVENTS
+# 6. MULTIPLE AGENTS & WORKLOADS
 # =============================================
 pdf.add_page()
-pdf.chapter_title("6. Event System")
+pdf.chapter_title("6. Multiple Agents & Workloads")
+pdf.body_text(
+    "A key feature of v2 is the ability to define an arbitrary number of agents and "
+    "workloads, all running simultaneously on the same infrastructure. Both the "
+    "agentServices and workloads arrays in the JSON config accept any number of entries "
+    " - there is no hard-coded limit. This models real-world scenarios where different "
+    "request types are handled by different specialized agents competing for shared "
+    "infrastructure resources like CPU, thread pools, and LLM capacity."
+)
+
+pdf.section_title("Multiple Agents")
+pdf.body_text(
+    "Each entry in the agentServices array defines a separate agent with its own:\n"
+    "  - LLM model (modelId)\n"
+    "  - Concurrency limit (maxConcurrency) and replica count\n"
+    "  - Available tools\n"
+    "  - Host zone and CPU cost per step (instructionsPerStep)\n\n"
+    "Agents operate independently: each has its own concurrency slots and request queue. "
+    "A workflow routed to agent-chat does not consume concurrency slots on agent-tool. "
+    "However, all agents share the same physical infrastructure nodes, so CPU contention "
+    "still occurs when multiple agents run on the same node."
+)
+pdf.code_block(
+    '"agentServices": [\n'
+    '  {\n'
+    '    "serviceId": "agent-chat",\n'
+    '    "nodeId": 1, "modelId": "gpt-4o",\n'
+    '    "maxConcurrency": 10, "replicas": 2,\n'
+    '    "instructionsPerStep": 50000000\n'
+    '  },\n'
+    '  {\n'
+    '    "serviceId": "agent-tool",\n'
+    '    "nodeId": 1, "modelId": "gpt-4o",\n'
+    '    "maxConcurrency": 5, "replicas": 3,\n'
+    '    "instructionsPerStep": 50000000\n'
+    '  }\n'
+    ']'
+)
+pdf.body_text(
+    "In this example, agent-chat has 2 replicas with 10 slots each (20 total concurrent "
+    "workflows), while agent-tool has 3 replicas with 5 slots each (15 total). They can "
+    "use different LLM models, different tools, and even run in different zones. The "
+    "simulator handles any combination automatically."
+)
+
+pdf.section_title("Multiple Workloads")
+pdf.body_text(
+    "Each workload defined in the JSON config generates its own independent Poisson "
+    "arrival stream. At startup, the simulation runner:\n\n"
+    "1. Iterates over each workload definition\n"
+    "2. Generates arrivals using exponential inter-arrival times (rate = workload.arrivalRate)\n"
+    "3. Tags each workflow with the workload name (e.g., 'wf-chat-light-0001')\n"
+    "4. Merges all arrivals into a single chronological stream\n"
+    "5. Submits them all to the same event queue\n\n"
+    "Each workload specifies an entryAgent, which determines which agent handles its "
+    "workflows. Different workloads can target different agents, or multiple workloads "
+    "can target the same agent."
+)
+pdf.code_block(
+    '"workloads": [\n'
+    '  { "name": "chat-light", "entryAgent": "agent-chat", "arrivalRate": 3.0, ... },\n'
+    '  { "name": "tool-heavy", "entryAgent": "agent-tool", "arrivalRate": 2.0, ... },\n'
+    '  { "name": "batch-job",  "entryAgent": "agent-tool", "arrivalRate": 0.5, ... }\n'
+    ']'
+)
+pdf.body_text(
+    "In this example, chat-light flows to agent-chat, while both tool-heavy and batch-job "
+    "flow to agent-tool. The two workloads on agent-tool compete for its 15 concurrency "
+    "slots, while chat-light runs independently on agent-chat's 20 slots. All three "
+    "workloads still share the same physical CPU node."
+)
+
+pdf.section_title("Routing: Workload to Agent Mapping")
+pdf.body_text(
+    "The entryAgent field in each workload definition is the only link between workloads "
+    "and agents. This is purely a config-level routing decision - no code changes are "
+    "needed to add new agents or workloads. The Orchestrator reads the entryAgent field "
+    "and dispatches the initial AgentReceive event to the correct AgentService.\n\n"
+    "This means you can model diverse scenarios:\n"
+    "  - All workloads on one agent (shared capacity, maximum contention)\n"
+    "  - Each workload on its own agent (isolated capacity, no cross-workload queuing)\n"
+    "  - Mixed routing (some workloads share agents, others are isolated)\n"
+    "  - Agents in different zones (edge agent for latency-sensitive, cloud for heavy)"
+)
+
+pdf.section_title("Per-Workload Budget")
+pdf.body_text(
+    "Each workload has its own maxStepsPerWorkflow and maxTokensPerWorkflow. "
+    "These limits are stored in the Orchestrator's workload registry and passed to "
+    "the AgentService when a WorkflowContext is created. This means a 'chat-light' "
+    "workflow with maxSteps=5 will terminate with BUDGET_EXHAUSTED after 5 agent steps, "
+    "while a 'tool-heavy' workflow on the same agent can continue for up to 15 steps."
+)
+
+pdf.section_title("Scalability")
+pdf.body_text(
+    "There is no limit on the number of agents, workloads, nodes, LLM models, or tools "
+    "you can define. The simulator parses all arrays from the JSON config and wires them "
+    "together automatically. You can model scenarios ranging from a single agent with one "
+    "workload to dozens of specialized agents across multiple zones handling hundreds of "
+    "distinct workload types. Adding a new agent or workload is always a config change "
+    " - never a code change."
+)
+
+pdf.section_title("Metrics Breakdown")
+pdf.body_text(
+    "The trajectory CSV includes a 'workload' column in SUBMIT and COMPLETE events, and "
+    "an entity_id column identifying which agent processed each step. This allows "
+    "post-simulation analysis to break down latency, cost, success rate, and step count "
+    "per workload type and per agent. The printSummary() method reports both aggregate "
+    "and per-workload statistics."
+)
+
+pdf.section_title("Example Output")
+pdf.code_block(
+    "=== Agentic Simulation Summary ===\n"
+    "--- ALL ---\n"
+    "  Completed:    495 | Successful: 473 (96%)\n"
+    "  Avg latency:  9842.1 ms (9.842 s)\n"
+    "  Max latency:  43931.2 ms (43.931 s)\n"
+    "  Total cost:   $3.0814 | Total steps: 2306\n"
+    "--- chat-light (agent-chat) ---\n"
+    "  Completed:    296 | Successful: 274 (93%)\n"
+    "  Avg latency:  9890.3 ms (9.890 s)\n"
+    "  Max latency:  28762.5 ms (28.763 s)\n"
+    "  Total cost:   $1.6506 | Total steps: 1191\n"
+    "--- tool-heavy (agent-tool) ---\n"
+    "  Completed:    199 | Successful: 199 (100%)\n"
+    "  Avg latency:  9790.8 ms (9.791 s)\n"
+    "  Max latency:  43931.2 ms (43.931 s)\n"
+    "  Total cost:   $1.4308 | Total steps: 1115"
+)
+
+
+# =============================================
+# 7. EVENTS
+# =============================================
+pdf.add_page()
+pdf.chapter_title("7. Event System")
 pdf.body_text("File: events/AgenticEvent.java")
 pdf.body_text(
     "This uses Java's sealed interface + records for type-safe, exhaustive event types. "
@@ -599,7 +790,7 @@ pdf.body_text(
 # 7. SCHEDULER
 # =============================================
 pdf.add_page()
-pdf.chapter_title("7. Event Scheduler")
+pdf.chapter_title("8. Event Scheduler")
 pdf.body_text("File: scheduler/EventScheduler.java")
 pdf.body_text(
     "The heart of any DES. This is intentionally minimal - just a priority queue wrapper."
@@ -636,7 +827,7 @@ pdf.body_text(
 # 8. LLM ENGINE
 # =============================================
 pdf.add_page()
-pdf.chapter_title("8. Stochastic LLM Engine")
+pdf.chapter_title("9. Stochastic LLM Engine")
 pdf.body_text("File: engine/LLMEngine.java")
 pdf.body_text(
     "This is the mathematical core. It does NOT call any real LLM API. Instead, it "
@@ -684,7 +875,7 @@ pdf.body_text("Straightforward token-based pricing. Accumulated per workflow.")
 # 9. AGENT DECISION
 # =============================================
 pdf.add_page()
-pdf.chapter_title("9. Agent Decision Model")
+pdf.chapter_title("10. Agent Decision Model")
 pdf.body_text("File: engine/AgentDecision.java")
 pdf.code_block(
     "public record AgentDecision(Kind kind, String targetId, int outputTokens) {\n"
@@ -709,7 +900,7 @@ pdf.body_text(
 # =============================================
 # 10. TOOL POOL
 # =============================================
-pdf.chapter_title("10. Tool Pool")
+pdf.chapter_title("11. Tool Pool")
 pdf.body_text("File: engine/ToolPool.java")
 pdf.body_text(
     "Stochastic surrogate for external tool calls. Much simpler than LLMEngine."
@@ -733,7 +924,7 @@ pdf.body_text(
 # 11. INFRASTRUCTURE LAYER
 # =============================================
 pdf.add_page()
-pdf.chapter_title("11. Infrastructure Layer")
+pdf.chapter_title("12. Infrastructure Layer")
 pdf.body_text("File: infra/InfrastructureLayer.java")
 pdf.body_text(
     "This class bridges v1 (Kubernetes simulator) and v2 (agentic simulator). It models "
@@ -819,7 +1010,7 @@ pdf.code_block(
 # 12. AGENT SERVICE
 # =============================================
 pdf.add_page()
-pdf.chapter_title("12. Agent Service - The Agent Loop")
+pdf.chapter_title("13. Agent Service - The Agent Loop")
 pdf.body_text("File: runtime/AgentService.java")
 pdf.body_text(
     "This is the most complex class - it implements the full agentic processing loop. "
@@ -923,7 +1114,7 @@ pdf.body_text(
 # 13. ORCHESTRATOR
 # =============================================
 pdf.add_page()
-pdf.chapter_title("13. Orchestrator")
+pdf.chapter_title("14. Orchestrator")
 pdf.body_text("File: runtime/Orchestrator.java")
 pdf.body_text(
     "Simple event router and workflow entry point. Two responsibilities:"
@@ -952,7 +1143,7 @@ pdf.code_block(
 # =============================================
 # 14. MESSAGE
 # =============================================
-pdf.chapter_title("14. Message Record")
+pdf.chapter_title("15. Message Record")
 pdf.body_text("File: runtime/Message.java")
 pdf.code_block(
     "public record Message(\n"
@@ -975,7 +1166,7 @@ pdf.body_text(
 # 15. TRAJECTORY COLLECTOR
 # =============================================
 pdf.add_page()
-pdf.chapter_title("15. Trajectory Collector")
+pdf.chapter_title("16. Trajectory Collector")
 pdf.body_text("File: metrics/TrajectoryCollector.java")
 pdf.body_text(
     "In-memory event log that writes to CSV. Every significant event in the simulation "
@@ -1000,7 +1191,7 @@ pdf.body_text(
 # 16. SIMULATION RUNNER
 # =============================================
 pdf.add_page()
-pdf.chapter_title("16. Simulation Runner")
+pdf.chapter_title("17. Simulation Runner")
 pdf.body_text("File: AgenticSimulationRunner.java")
 pdf.body_text(
     "The main orchestration class. It wires everything together and runs the simulation. "
@@ -1037,20 +1228,23 @@ pdf.code_block(
     "    orchestrator.registerAgent(agentId, agent);"
 )
 
-pdf.section_title("Phase 4: Generate Traffic (Poisson Process)")
+pdf.section_title("Phase 4: Generate Per-Workload Traffic (Poisson Process)")
 pdf.code_block(
-    "while (currentArrivalMs <= totalDuration) {\n"
-    "    promptTokens = Gaussian(mean=50, std=20);\n"
-    "    orchestrator.submit('wf-NNNN', promptTokens, currentArrivalMs);\n\n"
-    "    // Exponential inter-arrival time\n"
-    "    gap = -ln(U) / lambda;  // U ~ Uniform(0,1)\n"
-    "    currentArrivalMs += gap;\n"
-    "}"
+    "for each workload in topology.workloads():\n"
+    "    while (currentArrivalMs <= totalDuration):\n"
+    "        promptTokens = Gaussian(workload.tokensMean, workload.tokensStdDev)\n"
+    "        allArrivals.add(time, 'wf-{workload}-NNNN', workload, promptTokens)\n"
+    "        gap = -ln(U) / workload.arrivalRate  // Exponential inter-arrival\n"
+    "        currentArrivalMs += gap\n\n"
+    "sort allArrivals by time\n"
+    "for each arrival: orchestrator.submit(workflowId, workload, promptTokens, time)"
 )
 pdf.body_text(
-    "Poisson process: events arrive at random intervals where the gaps follow an "
-    "exponential distribution. With lambda=0.5/s over 100s, this generates ~50 workflows. "
-    "The exact count varies due to randomness."
+    "Each workload generates its own independent Poisson stream. All arrivals are "
+    "merged chronologically and submitted to the same event queue. This means different "
+    "workload types compete for the same infrastructure resources. "
+    "For example, with chat-light (0.3/s) and tool-heavy (0.2/s) over 100s, you get "
+    "~30 + ~20 = ~50 total workflows interleaved in time."
 )
 
 pdf.section_title("Phase 5: Run Event Loop")
@@ -1072,7 +1266,7 @@ pdf.body_text(
 # 17. ENTRY POINT
 # =============================================
 pdf.add_page()
-pdf.chapter_title("17. Entry Point")
+pdf.chapter_title("18. Entry Point")
 pdf.body_text("File: SimulatorApplication.java")
 pdf.body_text(
     "Spring Boot application with two modes:\n"
@@ -1093,7 +1287,7 @@ pdf.code_block(
 # 18. END-TO-END FLOW
 # =============================================
 pdf.add_page()
-pdf.chapter_title("18. End-to-End Flow Example")
+pdf.chapter_title("19. End-to-End Flow Example (Single Workflow)")
 pdf.body_text(
     "Let's trace a single workflow through the entire system with the default config: "
     "1 agent (agent-1) in CLOUD with 2 replicas, 1 LLM (gpt-4o) in CLOUD, "
@@ -1232,10 +1426,175 @@ pdf.body_text(
 
 
 # =============================================
-# 19. KEY DESIGN DECISIONS
+# 20. END-TO-END FLOW: MULTIPLE WORKLOADS
 # =============================================
 pdf.add_page()
-pdf.chapter_title("19. Key Design Decisions")
+pdf.chapter_title("20. End-to-End Flow: Multiple Workloads Under Contention")
+pdf.body_text(
+    "Chapter 19 traced a single workflow through the system in isolation. "
+    "This chapter shows how multiple workloads interact and compete for shared "
+    "infrastructure, which is the key value of the multi-workload feature."
+)
+
+pdf.section_title("Setup")
+pdf.body_text(
+    "Configuration: 1 node (8 cores, 3GHz), 1 agent (agent-1, maxConcurrency=10, 2 replicas), "
+    "1 LLM (gpt-4o), 1 tool (search-tool). Two concurrent workloads:"
+)
+pdf.code_block(
+    "chat-light:  arrivalRate=3.0/s  | tokens~N(50,20)  | maxSteps=5  | maxTokens=4000\n"
+    "tool-heavy:  arrivalRate=2.0/s  | tokens~N(200,60) | maxSteps=15 | maxTokens=50000"
+)
+pdf.body_text(
+    "Over 100 seconds, this produces roughly 300 chat-light + 200 tool-heavy = 500 total "
+    "workflows, all competing for the same 2 agent replicas with 10 concurrency slots each."
+)
+
+pdf.section_title("Phase 1: Traffic Generation & Merging")
+pdf.body_text(
+    "At startup, the simulation runner generates two independent Poisson arrival streams:"
+)
+pdf.code_block(
+    "chat-light stream:  t=0.12, t=0.45, t=0.89, t=1.02, t=1.31, ...\n"
+    "tool-heavy stream:  t=0.38, t=0.97, t=1.54, t=2.11, ...\n"
+    "\n"
+    "Merged (sorted):    t=0.12(chat), t=0.38(tool), t=0.45(chat), t=0.89(chat),\n"
+    "                    t=0.97(tool), t=1.02(chat), t=1.31(chat), t=1.54(tool), ..."
+)
+pdf.body_text(
+    "Each arrival is tagged with its workload name (e.g., 'wf-chat-light-0001', "
+    "'wf-tool-heavy-0042'). The Orchestrator stores a workload registry mapping "
+    "each workflowId to its WorkloadDefinition, so budget limits are enforced per-workload."
+)
+
+pdf.section_title("Phase 2: Early Simulation (Low Contention)")
+pdf.body_text(
+    "In the first few seconds, the system is relatively unloaded:"
+)
+pdf.code_block(
+    "t=0.12ms:   wf-chat-light-0001 arrives -> agent slot 1/20 used\n"
+    "            infra: 1 active job, speed = 8*3GHz = 24GHz -> compute = 2.08ms\n"
+    "\n"
+    "t=0.38ms:   wf-tool-heavy-0001 arrives -> agent slot 2/20 used\n"
+    "            infra: 2 active jobs, speed = 4*3GHz = 12GHz -> compute = 4.17ms\n"
+    "\n"
+    "t=0.45ms:   wf-chat-light-0002 arrives -> agent slot 3/20 used\n"
+    "            infra: 3 active jobs, speed = 2.67*3GHz = 8GHz -> compute = 6.25ms"
+)
+pdf.body_text(
+    "Notice how each new concurrent job reduces the CPU speed for ALL jobs on the same "
+    "node. Even at low load, the infrastructure layer is already showing contention effects. "
+    "The compute time per step grows from 2ms to 6ms with just 3 concurrent workflows."
+)
+
+pdf.section_title("Phase 3: Steady State (High Contention)")
+pdf.body_text(
+    "With 3.0 + 2.0 = 5.0 arrivals per second and each workflow taking multiple seconds "
+    "(LLM inference alone is ~4 seconds per step), the system quickly builds up concurrent "
+    "workflows. After ~10 seconds:"
+)
+pdf.code_block(
+    "Active workflows:     ~15-25 concurrent\n"
+    "Agent concurrency:    near or at 20/20 (10 per replica x 2 replicas)\n"
+    "Queue depth:          workflows waiting for concurrency slots\n"
+    "CPU contention:       15+ active jobs sharing 8 cores\n"
+    "  -> speed per job = (8/15)*3GHz = 1.6GHz\n"
+    "  -> compute per step = 50M/1.6G*1000 = 31.25ms (15x slower than unloaded)"
+)
+pdf.body_text(
+    "At this point, three bottlenecks are visible:\n"
+    "1. CPU contention: infrastructure compute grows from ~2ms to ~30ms+ per step\n"
+    "2. Agent queuing: workflows wait for a free concurrency slot\n"
+    "3. Resource competition: chat-light and tool-heavy workflows steal capacity from each other"
+)
+
+pdf.section_title("Phase 4: Per-Workload Budget Enforcement")
+pdf.body_text(
+    "The two workloads have different budget constraints, which leads to different "
+    "termination patterns:"
+)
+pdf.code_block(
+    "chat-light workflow (maxSteps=5, maxTokens=4000):\n"
+    "  Step 1: 50 input tokens -> CALL_TOOL  (60% probability)\n"
+    "  Step 2: +300 tool tokens = 350 total -> CALL_TOOL\n"
+    "  Step 3: +300 tool tokens = 650 total -> CALL_TOOL\n"
+    "  Step 4: +300 tool tokens = 950 total -> CALL_TOOL\n"
+    "  Step 5: +300 tool tokens = 1250 total -> BUDGET_EXHAUSTED (maxSteps=5 hit)\n"
+    "  Total time: ~20-25 seconds (5 LLM calls + 4 tool calls + infra overhead)\n"
+    "\n"
+    "tool-heavy workflow (maxSteps=15, maxTokens=50000):\n"
+    "  Step 1: 200 input tokens -> CALL_TOOL\n"
+    "  Step 2: +300 tokens = 500 total -> CALL_TOOL\n"
+    "  ...\n"
+    "  Step 8: +300 tokens = 2300 total -> GENERATE_TEXT (40% probability each step)\n"
+    "  Total time: ~40-60 seconds (8 LLM calls + 7 tool calls + infra overhead)"
+)
+pdf.body_text(
+    "Key observation: chat-light workflows terminate faster (fewer steps, tighter budget) "
+    "but with a higher BUDGET_EXHAUSTED rate. tool-heavy workflows run longer and consume "
+    "more resources, but are more likely to reach SUCCESS because they have room for more "
+    "agent steps before the budget limit hits."
+)
+
+pdf.section_title("Phase 5: Contention Impact on Different Workloads")
+pdf.body_text(
+    "The multi-workload setup reveals how different request types affect each other:"
+)
+pdf.bullet(
+    "Chat-light workflows are fast individually but arrive 3x more frequently. "
+    "They fill concurrency slots quickly, causing tool-heavy workflows to queue."
+)
+pdf.bullet(
+    "Tool-heavy workflows hold concurrency slots much longer (more steps, more tool calls). "
+    "A single tool-heavy workflow can block a slot for 40-60 seconds, during which "
+    "15-18 chat-light requests might have been served."
+)
+pdf.bullet(
+    "Under high load, the queue becomes a mix of both types. A burst of chat-light "
+    "arrivals can starve tool-heavy workflows, and vice versa."
+)
+pdf.bullet(
+    "CPU contention affects both equally: all workflows share the same physical cores. "
+    "The infrastructure layer does not distinguish between workload types."
+)
+
+pdf.section_title("Phase 6: Observing Results")
+pdf.body_text(
+    "The trajectory CSV and visualization scripts break down all metrics by workload. "
+    "Key metrics to compare:"
+)
+pdf.code_block(
+    "Metric              chat-light        tool-heavy\n"
+    "-------              ----------        ----------\n"
+    "Avg latency          ~5-15s            ~30-60s\n"
+    "Success rate         ~40-60%           ~60-80%\n"
+    "Budget exhausted     ~40-60%           ~10-20%\n"
+    "Avg steps            ~3-5              ~5-10\n"
+    "Avg cost             ~$0.002           ~$0.010\n"
+    "Queue wait time      lower (fast in)   higher (queued behind chat-light)"
+)
+pdf.body_text(
+    "These numbers vary with configuration. The key insight is that you can now study "
+    "how different workload mixes interact: changing chat-light's arrival rate from 3.0 "
+    "to 0.3 would dramatically reduce queuing for tool-heavy workflows. This is the "
+    "kind of capacity planning question the multi-workload simulator is designed to answer."
+)
+
+pdf.section_title("Timeline Visualization")
+pdf.body_text(
+    "The cumulative completions chart (Figure 3a in visualize_agentic.py) shows the "
+    "two workloads progressing at different rates. chat-light completes faster and "
+    "shows a steeper curve early on, while tool-heavy completions ramp up more gradually. "
+    "The queue depth chart (Figure 4a) shows when infrastructure becomes saturated and "
+    "workflows begin waiting for capacity."
+)
+
+
+# =============================================
+# 21. KEY DESIGN DECISIONS
+# =============================================
+pdf.add_page()
+pdf.chapter_title("21. Key Design Decisions")
 
 pdf.section_title("Why Discrete Event Simulation?")
 pdf.body_text(
@@ -1310,6 +1669,69 @@ pdf.body_text(
     "- c: number of servers (maxConcurrency)\n\n"
     "This lets you study queue buildup, tail latency under load, and optimal "
     "concurrency settings for different arrival rates."
+)
+
+
+# =============================================
+# 22. VISUALIZATION
+# =============================================
+pdf.add_page()
+pdf.chapter_title("22. Visualization")
+pdf.body_text(
+    "The project includes two visualization scripts for analyzing simulation output:"
+)
+
+pdf.section_title("V1 Visualization: visualize2.py")
+pdf.body_text(
+    "Reads simulation_trace_k8s.csv and queue_trace.csv from the v1 Kubernetes simulation. "
+    "Produces:\n"
+    "- Gantt chart showing request execution and wait times\n"
+    "- Queue depth per pod over time"
+)
+pdf.code_block("python visualize2.py")
+
+pdf.section_title("V2 Visualization: visualize_agentic.py")
+pdf.body_text(
+    "Reads agentic_trajectory.csv from the v2 agentic simulation. "
+    "Produces five figure groups, all broken down by workload type when multiple "
+    "workloads are configured:"
+)
+pdf.bullet("Latency distribution: histogram and boxplot per workload")
+pdf.bullet("Cost & steps: per-workflow cost over time, step count distribution")
+pdf.bullet("Timeline & outcomes: cumulative completions, completion reason breakdown")
+pdf.bullet("Infrastructure queuing: agent queue depth over time, wait time distribution")
+pdf.bullet("Infrastructure latency: per-step infra latency, compute vs queue wait breakdown")
+
+pdf.code_block("python visualize_agentic.py")
+
+pdf.body_text(
+    "The workload column in the trajectory CSV enables per-workload filtering. "
+    "When only one workload is defined, charts display aggregate data without "
+    "workload-specific coloring."
+)
+
+pdf.section_title("V2 Trace Visualization: visualize_trace.py")
+pdf.body_text(
+    "A Gantt-style trace visualization that shows individual workflows flowing through "
+    "agents in real time. This is the most detailed view, showing exactly which workflows "
+    "overlap on each agent and what phase they are in at any moment."
+)
+pdf.bullet("Agent Concurrency View: one panel per agent, workflows stacked vertically. "
+           "Color-coded bars show queue wait (red), infra compute (orange), LLM inference "
+           "(blue), and tool calls (green). Overlapping bars = concurrent execution.")
+pdf.bullet("Concurrent Active Workflows: line chart showing how many workflows each agent "
+           "is processing simultaneously over time, with per-agent and total lines.")
+pdf.bullet("Combined Agent View: zoomed timeline showing workflows from all agents on one "
+           "chart, grouped by agent with background shading for easy visual separation.")
+pdf.code_block(
+    "python visualize_trace.py                    # default: 30 workflows\n"
+    "python visualize_trace.py --workflows 50     # show more workflows\n"
+    "python visualize_trace.py --start 0 --end 15000  # zoom to first 15s"
+)
+pdf.body_text(
+    "This visualization is particularly useful for understanding multi-agent behavior: "
+    "you can see agent-chat and agent-tool processing their respective workloads in "
+    "parallel, each with independent concurrency pools but sharing the same CPU node."
 )
 
 

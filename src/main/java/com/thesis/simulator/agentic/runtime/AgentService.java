@@ -5,6 +5,7 @@ import com.thesis.simulator.agentic.config.AgenticConfig.LLMProfile;
 import com.thesis.simulator.agentic.config.AgenticConfig.NetworkLink;
 import com.thesis.simulator.agentic.config.AgenticConfig.Topology;
 import com.thesis.simulator.agentic.config.AgenticConfig.ToolProfile;
+import com.thesis.simulator.agentic.config.AgenticConfig.WorkloadDefinition;
 import com.thesis.simulator.agentic.engine.AgentDecision;
 import com.thesis.simulator.agentic.engine.LLMEngine;
 import com.thesis.simulator.agentic.engine.ToolPool;
@@ -14,9 +15,8 @@ import com.thesis.simulator.agentic.infra.InfrastructureLayer;
 import com.thesis.simulator.agentic.metrics.TrajectoryCollector;
 import com.thesis.simulator.agentic.scheduler.EventScheduler;
 
-import lombok.RequiredArgsConstructor;
-
 import java.util.*;
+import java.util.function.Function;
 
 /**
  * Simulated agentic microservice with per-workflow state keyed by workflow ID.
@@ -25,8 +25,10 @@ import java.util.*;
  * infrastructure compute, invoke the LLM, and branch on the decision (generate text,
  * call a tool, delegate, or fail). Enforces concurrency limits with a FIFO queue,
  * modeling real-world container thread pools.
+ * <p>
+ * Budget limits (maxSteps, maxTokens) are resolved per-workflow from the workload
+ * definition, supporting heterogeneous workloads with different constraints.
  */
-@RequiredArgsConstructor
 public class AgentService {
 
     private final AgentDefinition def;
@@ -36,6 +38,7 @@ public class AgentService {
     private final EventScheduler scheduler;
     private final TrajectoryCollector trace;
     private final InfrastructureLayer infraLayer;
+    private final Function<String, WorkloadDefinition> workloadLookup;
 
     private int activeRequests = 0;
     private final Queue<AgenticEvent.AgentReceive> waitingQueue = new LinkedList<>();
@@ -43,6 +46,19 @@ public class AgentService {
     /** Per-workflow ephemeral session. */
     private final Map<String, WorkflowContext> contexts = new HashMap<>();
     private int infraJobCounter = 0;
+
+    public AgentService(AgentDefinition def, Topology topology, LLMEngine llm,
+                        ToolPool tools, EventScheduler scheduler, TrajectoryCollector trace,
+                        InfrastructureLayer infraLayer, Function<String, WorkloadDefinition> workloadLookup) {
+        this.def = def;
+        this.topology = topology;
+        this.llm = llm;
+        this.tools = tools;
+        this.scheduler = scheduler;
+        this.trace = trace;
+        this.infraLayer = infraLayer;
+        this.workloadLookup = workloadLookup;
+    }
 
     /**
      * Receives an incoming message. If the agent is at capacity, the request is queued;
@@ -63,7 +79,12 @@ public class AgentService {
     /** Processes the receive event: builds context, samples the LLM decision, and submits to infrastructure. */
     private void processReceive(AgenticEvent.AgentReceive ev) {
         WorkflowContext ctx = contexts.computeIfAbsent(
-                ev.workflowId(), wid -> new WorkflowContext(wid, ev.timeMs()));
+                ev.workflowId(), wid -> {
+                    WorkloadDefinition wl = workloadLookup.apply(wid);
+                    int maxSteps = wl != null ? wl.maxStepsPerWorkflow() : 10;
+                    int maxTokens = wl != null ? wl.maxTokensPerWorkflow() : 10000;
+                    return new WorkflowContext(wid, ev.timeMs(), maxSteps, maxTokens);
+                });
         ctx.stepIndex++;
         ctx.accumulatedInputTokens += ev.message().inputTokens();
 
@@ -72,9 +93,9 @@ public class AgentService {
                        "input_tokens", ev.message().inputTokens(),
                        "session_tokens", ctx.accumulatedInputTokens));
 
-        // Enforce step and token budget limits
-        if (ctx.stepIndex > topology.workflow().maxSteps()
-                || ctx.accumulatedInputTokens > topology.workflow().maxTokens()) {
+        // Enforce per-workload step and token budget limits
+        if (ctx.stepIndex > ctx.maxSteps
+                || ctx.accumulatedInputTokens > ctx.maxTokens) {
             terminate(ev.workflowId(), ev.timeMs(), "BUDGET_EXHAUSTED", ctx);
             return;
         }
@@ -196,7 +217,7 @@ public class AgentService {
 
     /** Terminates a workflow, frees the concurrency slot, and dequeues the next waiting request. */
     private void terminate(String workflowId, double now, String reason, WorkflowContext ctx) {
-        if (ctx == null) ctx = new WorkflowContext(workflowId, now);
+        if (ctx == null) ctx = new WorkflowContext(workflowId, now, 10, 10000);
         scheduler.schedule(new AgenticEvent.WorkflowComplete(
                 now, workflowId, reason,
                 now - ctx.startedAtMs, ctx.totalCostUsd, ctx.stepIndex));
@@ -234,14 +255,22 @@ public class AgentService {
                         "No link from " + fromZone + " to " + toZone));
     }
 
-    /** Per-workflow ephemeral session. */
-    @RequiredArgsConstructor
+    /** Per-workflow ephemeral session with workload-specific budget limits. */
     private static class WorkflowContext {
         final String workflowId;
         final double startedAtMs;
+        final int maxSteps;
+        final int maxTokens;
         int stepIndex = 0;
         int accumulatedInputTokens = 0;
         int accumulatedOutputTokens = 0;
         double totalCostUsd = 0.0;
+
+        WorkflowContext(String workflowId, double startedAtMs, int maxSteps, int maxTokens) {
+            this.workflowId = workflowId;
+            this.startedAtMs = startedAtMs;
+            this.maxSteps = maxSteps;
+            this.maxTokens = maxTokens;
+        }
     }
 }

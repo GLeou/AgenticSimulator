@@ -72,14 +72,21 @@ public final class AgenticConfig {
             Map<String, ToolProfile> tools,
             Map<String, AgentDefinition> agents,
             List<InfraNode> infraNodes,
-            WorkflowSpec workflow
+            List<WorkloadDefinition> workloads
     ) {}
 
-    /** Workflow specification: entry agent, prompt size, and budget constraints. */
-    public record WorkflowSpec(
+    /**
+     * Defines a distinct workload type with its own arrival rate, token distribution,
+     * entry agent, and budget constraints. Multiple workloads run concurrently,
+     * competing for the same infrastructure resources.
+     */
+    public record WorkloadDefinition(
+            String name,
             String entryAgent,
-            int initialPromptTokens,
-            int maxSteps,
-            int maxTokens
+            double arrivalRate,
+            double userMessageTokensMean,
+            double userMessageTokensStdDev,
+            int maxStepsPerWorkflow,
+            int maxTokensPerWorkflow
     ) {}
 }
