@@ -138,8 +138,23 @@ public class AgenticSimulationRunner {
         // Execute the discrete-event loop
         scheduler.run(orchestrator::process);
 
-        // Export trajectory data
-        Path traceOut = Path.of("agentic_trajectory.csv");
+        // Export trajectory data — derive filename from config path
+        String csvName = "agentic_trajectory.csv";
+        if (configPath.contains("exp1_validation_")) {
+            String letter = configPath.replaceAll(".*exp1_validation_(\\w)\\.json", "$1");
+            csvName = "exp1" + letter + "_trajectory.csv";
+        } else if (configPath.contains("exp2_twolayer_")) {
+            String letter = configPath.replaceAll(".*exp2_twolayer_(\\w)\\.json", "$1");
+            csvName = "exp2" + letter + "_trajectory.csv";
+        } else if (configPath.contains("exp3_placement_")) {
+            String letter = configPath.replaceAll(".*exp3_placement_(\\w)\\.json", "$1");
+            csvName = "exp3" + letter + "_trajectory.csv";
+        } else if (configPath.contains("exp4_isolation_")) {
+            // e.g. "experiments/exp4_isolation_a1.json" -> "exp4a1_trajectory.csv"
+            String suffix = configPath.replaceAll(".*exp4_isolation_(\\w+)\\.json", "$1");
+            csvName = "exp4" + suffix + "_trajectory.csv";
+        }
+        Path traceOut = Path.of(csvName);
         trace.writeCsv(traceOut);
         System.out.println("Trajectory saved to " + traceOut.toAbsolutePath());
 

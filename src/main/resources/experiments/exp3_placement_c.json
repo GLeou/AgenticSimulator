@@ -1,0 +1,48 @@
+{
+  "nodes": [
+    { "nodeId": 1, "zone": "EDGE", "cores": 4, "frequencyHz": 2000000000.0,
+      "bandwidthBytesPerSec": 500000000.0 },
+    { "nodeId": 2, "zone": "CLOUD", "cores": 16, "frequencyHz": 3000000000.0,
+      "bandwidthBytesPerSec": 1250000000.0 }
+  ],
+  "zonePairLatencies": [
+    { "from": "EDGE", "to": "EDGE", "latencyMs": 0.5 },
+    { "from": "CLOUD", "to": "CLOUD", "latencyMs": 1.0 },
+    { "from": "EDGE", "to": "CLOUD", "latencyMs": 40.0 },
+    { "from": "CLOUD", "to": "EDGE", "latencyMs": 40.0 }
+  ],
+  "agentServices": [
+    { "serviceId": "agent-chat", "nodeId": 1, "modelId": "gpt-4o",
+      "maxConcurrency": 10, "hostZone": "EDGE",
+      "systemPromptTokens": 500, "toolSchemaTokens": 200,
+      "instructionsPerStep": 50000000, "replicas": 2 },
+    { "serviceId": "agent-tool", "nodeId": 1, "modelId": "gpt-4o",
+      "maxConcurrency": 5, "hostZone": "EDGE",
+      "systemPromptTokens": 500, "toolSchemaTokens": 200,
+      "instructionsPerStep": 50000000, "replicas": 3 }
+  ],
+  "llmModels": [
+    { "modelId": "gpt-4o",
+      "ttftMeanMs": 400.0, "ttftGammaShape": 4.0,
+      "tpotMeanMs": 25.0, "tpotGammaShape": 10.0,
+      "outputTokensMean": 150, "outputTokensStdDev": 50,
+      "costPerInputToken": 0.0000025, "costPerOutputToken": 0.00001,
+      "hostZone": "CLOUD",
+      "decisionWeights": { "generate_text": 0.4, "call_tool": 0.6 }
+    }
+  ],
+  "tools": [
+    { "toolId": "search-tool", "nodeId": 2, "latencyMeanMs": 200.0,
+      "latencyStdDevMs": 50.0, "resultTokensMean": 300,
+      "resultTokensStdDev": 100.0, "errorRate": 0.0, "hostZone": "CLOUD" }
+  ],
+  "simulation": { "durationSeconds": 100.0, "seed": 42 },
+  "workloads": [
+    { "name": "chat-light", "entryAgent": "agent-chat", "arrivalRate": 2.0,
+      "userMessageTokensMean": 50.0, "userMessageTokensStdDev": 20.0,
+      "maxStepsPerWorkflow": 5, "maxTokensPerWorkflow": 4000 },
+    { "name": "tool-heavy", "entryAgent": "agent-tool", "arrivalRate": 1.0,
+      "userMessageTokensMean": 200.0, "userMessageTokensStdDev": 60.0,
+      "maxStepsPerWorkflow": 15, "maxTokensPerWorkflow": 50000 }
+  ]
+}

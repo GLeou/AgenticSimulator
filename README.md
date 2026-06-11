@@ -143,7 +143,7 @@ Or in IntelliJ IDEA: add `agentic` to **Run Configuration > Program Arguments**.
 
 ### V1 Visualization
 ```bash
-python visualize2.py
+python visualize1.py
 ```
 Produces a Gantt chart of request execution/wait times and queue depth over time.
 

@@ -15,7 +15,7 @@ import os
 import sys
 
 BASE_PATH = r'C:\Users\ileounakis\IdeaProjects\Simulator'
-TRAJECTORY_FILE = os.path.join(BASE_PATH, 'agentic_trajectory.csv')
+TRAJECTORY_FILE = os.path.join(BASE_PATH, 'exp1a_trajectory.csv')
 
 if not os.path.exists(TRAJECTORY_FILE):
     print(f"Trajectory file not found: {TRAJECTORY_FILE}")

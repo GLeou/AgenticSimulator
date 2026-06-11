@@ -43,6 +43,9 @@ public class AgentService {
     private int activeRequests = 0;
     private final Queue<AgenticEvent.AgentReceive> waitingQueue = new LinkedList<>();
 
+    /** Tracks the original submission time for queued workflows (before dequeue timestamp adjustment). */
+    private final Map<String, Double> submissionTimes = new HashMap<>();
+
     /** Per-workflow ephemeral session. */
     private final Map<String, WorkflowContext> contexts = new HashMap<>();
     private int infraJobCounter = 0;
@@ -65,6 +68,9 @@ public class AgentService {
      * otherwise it is processed immediately (context building + LLM dispatch).
      */
     public void onReceive(AgenticEvent.AgentReceive ev) {
+        // Record original submission time (first time we see this workflow)
+        submissionTimes.putIfAbsent(ev.workflowId(), ev.timeMs());
+
         if (activeRequests >= def.maxConcurrency()) {
             waitingQueue.add(ev);
             trace.log(ev.workflowId(), def.id(), "QUEUE_ENTER", ev.timeMs(),
@@ -83,7 +89,9 @@ public class AgentService {
                     WorkloadDefinition wl = workloadLookup.apply(wid);
                     int maxSteps = wl != null ? wl.maxStepsPerWorkflow() : 10;
                     int maxTokens = wl != null ? wl.maxTokensPerWorkflow() : 10000;
-                    return new WorkflowContext(wid, ev.timeMs(), maxSteps, maxTokens);
+                    // Use the original submission time, not the (possibly dequeue-adjusted) event time
+                    double submitTime = submissionTimes.getOrDefault(wid, ev.timeMs());
+                    return new WorkflowContext(wid, submitTime, maxSteps, maxTokens);
                 });
         ctx.stepIndex++;
         ctx.accumulatedInputTokens += ev.message().inputTokens();
@@ -222,6 +230,7 @@ public class AgentService {
                 now, workflowId, reason,
                 now - ctx.startedAtMs, ctx.totalCostUsd, ctx.stepIndex));
         contexts.remove(workflowId);
+        submissionTimes.remove(workflowId);
 
         // Free concurrency slot and try to process next queued request
         activeRequests--;

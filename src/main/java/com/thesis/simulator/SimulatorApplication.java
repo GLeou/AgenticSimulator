@@ -23,8 +23,13 @@ public class SimulatorApplication implements CommandLineRunner {
 
             if (runAgentic) {
                 // V2: Agentic simulation with LLM-driven decision-making
+                // Optional: pass a custom config path as second argument (e.g., "agentic experiments/exp1_validation_a.json")
+                String configPath = Arrays.stream(args)
+                        .filter(a -> a.endsWith(".json"))
+                        .findFirst()
+                        .orElse("agentic_config.json");
                 AgenticSimulationRunner runner = new AgenticSimulationRunner();
-                runner.run("agentic_config.json");
+                runner.run(configPath);
             } else {
                 // V1: Discrete-event Kubernetes microservices simulation
                 System.out.println("Running Kubernetes Simulation (v1)...");

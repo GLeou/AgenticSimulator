@@ -130,7 +130,7 @@ toc = [
     "17. Simulation Runner (AgenticSimulationRunner.java)",
     "18. Entry Point (SimulatorApplication.java)",
     "19. End-to-End Flow Example (Single Workflow)",
-    "20. End-to-End Flow: Multiple Workloads Under Contention",
+    "20. End-to-End Flow: Two Agents Under Contention",
     "21. Key Design Decisions",
     "22. Visualization",
 ]
@@ -1429,164 +1429,202 @@ pdf.body_text(
 # 20. END-TO-END FLOW: MULTIPLE WORKLOADS
 # =============================================
 pdf.add_page()
-pdf.chapter_title("20. End-to-End Flow: Multiple Workloads Under Contention")
+pdf.chapter_title("20. End-to-End Flow: Two Agents Under Contention")
 pdf.body_text(
     "Chapter 19 traced a single workflow through the system in isolation. "
-    "This chapter shows how multiple workloads interact and compete for shared "
-    "infrastructure, which is the key value of the multi-workload feature."
+    "This chapter shows how two agents handle different workloads simultaneously, "
+    "with separate concurrency pools but shared CPU infrastructure."
 )
 
 pdf.section_title("Setup")
 pdf.body_text(
-    "Configuration: 1 node (8 cores, 3GHz), 1 agent (agent-1, maxConcurrency=10, 2 replicas), "
-    "1 LLM (gpt-4o), 1 tool (search-tool). Two concurrent workloads:"
+    "Configuration: 1 node (8 cores, 3GHz), 2 agents, 1 LLM (gpt-4o), "
+    "1 tool (search-tool). Two concurrent workloads routed to different agents:"
 )
 pdf.code_block(
-    "chat-light:  arrivalRate=3.0/s  | tokens~N(50,20)  | maxSteps=5  | maxTokens=4000\n"
-    "tool-heavy:  arrivalRate=2.0/s  | tokens~N(200,60) | maxSteps=15 | maxTokens=50000"
+    "agent-chat:  2 replicas x 10 concurrency = 20 slots  (handles chat-light)\n"
+    "agent-tool:  3 replicas x 5 concurrency  = 15 slots  (handles tool-heavy)\n"
+    "Total concurrent capacity: 35 slots on 1 node (8 cores)\n"
+    "\n"
+    "chat-light --> agent-chat:  arrivalRate=3.0/s | tokens~N(50,20)  | maxSteps=5\n"
+    "tool-heavy --> agent-tool:  arrivalRate=2.0/s | tokens~N(200,60) | maxSteps=15"
 )
 pdf.body_text(
     "Over 100 seconds, this produces roughly 300 chat-light + 200 tool-heavy = 500 total "
-    "workflows, all competing for the same 2 agent replicas with 10 concurrency slots each."
+    "workflows. Each workload has its own agent, so they do NOT compete for concurrency "
+    "slots. However, all 35 potential concurrent workflows share the same 8 CPU cores."
 )
 
-pdf.section_title("Phase 1: Traffic Generation & Merging")
+pdf.section_title("Phase 1: Traffic Generation & Routing")
 pdf.body_text(
-    "At startup, the simulation runner generates two independent Poisson arrival streams:"
+    "At startup, the simulation runner generates two independent Poisson arrival streams "
+    "and merges them chronologically. The Orchestrator reads each workload's entryAgent "
+    "field and routes the initial AgentReceive event to the correct agent:"
 )
 pdf.code_block(
-    "chat-light stream:  t=0.12, t=0.45, t=0.89, t=1.02, t=1.31, ...\n"
-    "tool-heavy stream:  t=0.38, t=0.97, t=1.54, t=2.11, ...\n"
-    "\n"
-    "Merged (sorted):    t=0.12(chat), t=0.38(tool), t=0.45(chat), t=0.89(chat),\n"
-    "                    t=0.97(tool), t=1.02(chat), t=1.31(chat), t=1.54(tool), ..."
+    "t=0.00ms:  wf-chat-light-0001 --> ORCHESTRATOR --> agent-chat\n"
+    "t=0.00ms:  wf-tool-heavy-0297 --> ORCHESTRATOR --> agent-tool\n"
+    "t=0.12ms:  wf-chat-light-0002 --> ORCHESTRATOR --> agent-chat\n"
+    "t=0.19ms:  wf-tool-heavy-0298 --> ORCHESTRATOR --> agent-tool\n"
+    "t=0.23ms:  wf-chat-light-0003 --> ORCHESTRATOR --> agent-chat\n"
+    "t=0.32ms:  wf-tool-heavy-0299 --> ORCHESTRATOR --> agent-tool\n"
+    "..."
 )
 pdf.body_text(
-    "Each arrival is tagged with its workload name (e.g., 'wf-chat-light-0001', "
-    "'wf-tool-heavy-0042'). The Orchestrator stores a workload registry mapping "
-    "each workflowId to its WorkloadDefinition, so budget limits are enforced per-workload."
+    "Each workflow is tagged with its workload name (e.g., 'wf-chat-light-0001'). "
+    "The Orchestrator stores a workload registry mapping each workflowId to its "
+    "WorkloadDefinition, so budget limits and routing are resolved correctly."
 )
 
 pdf.section_title("Phase 2: Early Simulation (Low Contention)")
 pdf.body_text(
-    "In the first few seconds, the system is relatively unloaded:"
+    "In the first few seconds, both agents are well below capacity:"
 )
 pdf.code_block(
-    "t=0.12ms:   wf-chat-light-0001 arrives -> agent slot 1/20 used\n"
-    "            infra: 1 active job, speed = 8*3GHz = 24GHz -> compute = 2.08ms\n"
+    "t=0.12ms:  wf-chat-light-0001 --> agent-chat (slot 1/20)\n"
+    "           wf-tool-heavy-0297 --> agent-tool (slot 1/15)\n"
+    "           Node: 2 active jobs, speed = (8/2)*3GHz = 12GHz\n"
+    "           Compute per step: 50M/12G*1000 = 4.17ms\n"
     "\n"
-    "t=0.38ms:   wf-tool-heavy-0001 arrives -> agent slot 2/20 used\n"
-    "            infra: 2 active jobs, speed = 4*3GHz = 12GHz -> compute = 4.17ms\n"
-    "\n"
-    "t=0.45ms:   wf-chat-light-0002 arrives -> agent slot 3/20 used\n"
-    "            infra: 3 active jobs, speed = 2.67*3GHz = 8GHz -> compute = 6.25ms"
+    "t=0.45ms:  wf-chat-light-0002 --> agent-chat (slot 2/20)\n"
+    "           Node: 3 active jobs, speed = (8/3)*3GHz = 8GHz\n"
+    "           Compute per step: 50M/8G*1000 = 6.25ms"
 )
 pdf.body_text(
-    "Notice how each new concurrent job reduces the CPU speed for ALL jobs on the same "
-    "node. Even at low load, the infrastructure layer is already showing contention effects. "
-    "The compute time per step grows from 2ms to 6ms with just 3 concurrent workflows."
+    "Key observation: even though agent-chat and agent-tool have separate queues, "
+    "their workflows share the same CPU node. The infrastructure layer sees ALL "
+    "active jobs regardless of which agent they belong to. Each new concurrent job "
+    "reduces the CPU speed for every job on the node."
 )
 
-pdf.section_title("Phase 3: Steady State (High Contention)")
+pdf.section_title("Phase 3: Agents Running in Parallel")
 pdf.body_text(
-    "With 3.0 + 2.0 = 5.0 arrivals per second and each workflow taking multiple seconds "
-    "(LLM inference alone is ~4 seconds per step), the system quickly builds up concurrent "
-    "workflows. After ~10 seconds:"
+    "After a few seconds, both agents are actively processing workflows simultaneously. "
+    "Here is a snapshot of what both agents are doing at t=5000ms:"
 )
 pdf.code_block(
-    "Active workflows:     ~15-25 concurrent\n"
-    "Agent concurrency:    near or at 20/20 (10 per replica x 2 replicas)\n"
-    "Queue depth:          workflows waiting for concurrency slots\n"
-    "CPU contention:       15+ active jobs sharing 8 cores\n"
-    "  -> speed per job = (8/15)*3GHz = 1.6GHz\n"
-    "  -> compute per step = 50M/1.6G*1000 = 31.25ms (15x slower than unloaded)"
+    "agent-chat (t=5000ms):\n"
+    "  slot 1:  wf-chat-light-0001  step 3  waiting for LLM response\n"
+    "  slot 2:  wf-chat-light-0002  step 2  tool call in progress\n"
+    "  slot 3:  wf-chat-light-0005  step 1  infra compute (CPU)\n"
+    "  slot 4:  wf-chat-light-0006  step 1  waiting for LLM response\n"
+    "  ...      (8 of 20 slots used)\n"
+    "\n"
+    "agent-tool (t=5000ms):\n"
+    "  slot 1:  wf-tool-heavy-0297  step 4  tool call in progress\n"
+    "  slot 2:  wf-tool-heavy-0298  step 3  waiting for LLM response\n"
+    "  slot 3:  wf-tool-heavy-0299  step 2  infra compute (CPU)\n"
+    "  ...      (5 of 15 slots used)\n"
+    "\n"
+    "Node: 13 active jobs across both agents\n"
+    "  CPU speed per job = (8/13)*3GHz = 1.85GHz\n"
+    "  Compute per step = 50M/1.85G*1000 = 27ms"
 )
 pdf.body_text(
-    "At this point, three bottlenecks are visible:\n"
-    "1. CPU contention: infrastructure compute grows from ~2ms to ~30ms+ per step\n"
-    "2. Agent queuing: workflows wait for a free concurrency slot\n"
-    "3. Resource competition: chat-light and tool-heavy workflows steal capacity from each other"
+    "Both agents process independently: agent-chat handles chat-light workflows "
+    "through their short 5-step lifecycle, while agent-tool handles tool-heavy "
+    "workflows through their longer 15-step lifecycle. A chat-light workflow "
+    "finishing on agent-chat frees a slot for the next chat-light request, "
+    "but has no effect on agent-tool's queue."
 )
 
-pdf.section_title("Phase 4: Per-Workload Budget Enforcement")
+pdf.section_title("Phase 4: High Contention (Steady State)")
 pdf.body_text(
-    "The two workloads have different budget constraints, which leads to different "
-    "termination patterns:"
+    "With 5.0 total arrivals/s and each workflow taking multiple seconds, the system "
+    "builds up concurrent workflows rapidly. After ~15 seconds:"
 )
 pdf.code_block(
-    "chat-light workflow (maxSteps=5, maxTokens=4000):\n"
-    "  Step 1: 50 input tokens -> CALL_TOOL  (60% probability)\n"
-    "  Step 2: +300 tool tokens = 350 total -> CALL_TOOL\n"
-    "  Step 3: +300 tool tokens = 650 total -> CALL_TOOL\n"
-    "  Step 4: +300 tool tokens = 950 total -> CALL_TOOL\n"
-    "  Step 5: +300 tool tokens = 1250 total -> BUDGET_EXHAUSTED (maxSteps=5 hit)\n"
-    "  Total time: ~20-25 seconds (5 LLM calls + 4 tool calls + infra overhead)\n"
+    "agent-chat: 18/20 slots used  | occasional queue buildup\n"
+    "agent-tool: 13/15 slots used  | some queuing\n"
+    "Node: 31 active jobs across both agents\n"
+    "  CPU speed per job = (8/31)*3GHz = 0.77GHz\n"
+    "  Compute per step = 50M/0.77G*1000 = 64.9ms  (31x slower than unloaded)"
+)
+pdf.body_text(
+    "Two levels of contention are now visible:\n\n"
+    "1. Agent-level queuing (SEPARATE per agent):\n"
+    "   - agent-chat: chat-light workflows queue when >20 concurrent\n"
+    "   - agent-tool: tool-heavy workflows queue when >15 concurrent\n"
+    "   - A queued chat-light request does NOT block tool-heavy (different agent)\n\n"
+    "2. Infrastructure-level CPU contention (SHARED across agents):\n"
+    "   - All 31 workflows from both agents share 8 cores\n"
+    "   - Compute per step grows from 2ms (unloaded) to 65ms (loaded)\n"
+    "   - Reducing chat-light traffic improves agent-tool's CPU performance too"
+)
+
+pdf.section_title("Phase 5: Per-Workload Budget Enforcement")
+pdf.body_text(
+    "The two workloads have different budgets, leading to different behavior:"
+)
+pdf.code_block(
+    "chat-light on agent-chat (maxSteps=5, maxTokens=4000):\n"
+    "  Step 1: 50 tokens  --> CALL_TOOL (60% prob)\n"
+    "  Step 2: +300 tokens = 350  --> CALL_TOOL\n"
+    "  Step 3: +300 tokens = 650  --> CALL_TOOL\n"
+    "  Step 4: +300 tokens = 950  --> CALL_TOOL\n"
+    "  Step 5: +300 tokens = 1250 --> BUDGET_EXHAUSTED (maxSteps=5)\n"
+    "  Lifetime: ~15-25s | Frees agent-chat slot for next chat-light\n"
     "\n"
-    "tool-heavy workflow (maxSteps=15, maxTokens=50000):\n"
-    "  Step 1: 200 input tokens -> CALL_TOOL\n"
-    "  Step 2: +300 tokens = 500 total -> CALL_TOOL\n"
+    "tool-heavy on agent-tool (maxSteps=15, maxTokens=50000):\n"
+    "  Step 1: 200 tokens --> CALL_TOOL\n"
+    "  Step 2: +300 = 500 --> CALL_TOOL\n"
     "  ...\n"
-    "  Step 8: +300 tokens = 2300 total -> GENERATE_TEXT (40% probability each step)\n"
-    "  Total time: ~40-60 seconds (8 LLM calls + 7 tool calls + infra overhead)"
+    "  Step 8: +300 = 2300 --> GENERATE_TEXT (40% prob each step)\n"
+    "  Lifetime: ~40-60s | Holds agent-tool slot much longer"
 )
 pdf.body_text(
-    "Key observation: chat-light workflows terminate faster (fewer steps, tighter budget) "
-    "but with a higher BUDGET_EXHAUSTED rate. tool-heavy workflows run longer and consume "
-    "more resources, but are more likely to reach SUCCESS because they have room for more "
-    "agent steps before the budget limit hits."
+    "chat-light workflows cycle faster through agent-chat (short lifetime, tight budget), "
+    "while tool-heavy workflows hold agent-tool slots much longer. This is why agent-tool "
+    "has fewer replicas but more of them (3x5=15): each slot is occupied longer, so you "
+    "need enough total capacity to handle the queue."
 )
 
-pdf.section_title("Phase 5: Contention Impact on Different Workloads")
+pdf.section_title("Phase 6: Cross-Agent CPU Impact")
 pdf.body_text(
-    "The multi-workload setup reveals how different request types affect each other:"
+    "The key insight of the two-agent setup: agents are isolated at the application "
+    "level but coupled at the infrastructure level."
 )
 pdf.bullet(
-    "Chat-light workflows are fast individually but arrive 3x more frequently. "
-    "They fill concurrency slots quickly, causing tool-heavy workflows to queue."
+    "Scenario A: reduce chat-light arrivalRate from 3.0 to 0.5/s. "
+    "agent-chat goes from ~18 concurrent to ~5 concurrent. "
+    "The node drops from ~31 active jobs to ~18. CPU speed per job doubles. "
+    "agent-tool's workflows compute faster even though its own config did not change."
 )
 pdf.bullet(
-    "Tool-heavy workflows hold concurrency slots much longer (more steps, more tool calls). "
-    "A single tool-heavy workflow can block a slot for 40-60 seconds, during which "
-    "15-18 chat-light requests might have been served."
+    "Scenario B: move agent-tool to a second node (nodeId: 2). "
+    "Now each agent has its own 8 cores. Zero CPU contention between agents. "
+    "agent-chat: 50M/(8/18*3G)*1000 = 37.5ms per step. "
+    "agent-tool: 50M/(8/13*3G)*1000 = 27.1ms per step. "
+    "Both improve significantly vs. sharing one node."
 )
 pdf.bullet(
-    "Under high load, the queue becomes a mix of both types. A burst of chat-light "
-    "arrivals can starve tool-heavy workflows, and vice versa."
-)
-pdf.bullet(
-    "CPU contention affects both equally: all workflows share the same physical cores. "
-    "The infrastructure layer does not distinguish between workload types."
+    "Scenario C: route both workloads to the same agent (entryAgent: 'agent-chat'). "
+    "Now they share concurrency slots again. tool-heavy workflows block chat-light "
+    "in the queue. This is the single-agent behavior from before the change."
 )
 
-pdf.section_title("Phase 6: Observing Results")
+pdf.section_title("Phase 7: Observing Results")
 pdf.body_text(
-    "The trajectory CSV and visualization scripts break down all metrics by workload. "
-    "Key metrics to compare:"
+    "The trajectory CSV and visualization scripts break down all metrics by workload "
+    "and by agent. Key metrics from a sample run:"
 )
 pdf.code_block(
-    "Metric              chat-light        tool-heavy\n"
-    "-------              ----------        ----------\n"
-    "Avg latency          ~5-15s            ~30-60s\n"
-    "Success rate         ~40-60%           ~60-80%\n"
-    "Budget exhausted     ~40-60%           ~10-20%\n"
-    "Avg steps            ~3-5              ~5-10\n"
-    "Avg cost             ~$0.002           ~$0.010\n"
-    "Queue wait time      lower (fast in)   higher (queued behind chat-light)"
+    "                     agent-chat          agent-tool\n"
+    "                     (chat-light)        (tool-heavy)\n"
+    "Completed:           296                 199\n"
+    "Success rate:        93%                 100%\n"
+    "Avg latency:         9.89s               9.79s\n"
+    "Max latency:         28.76s              43.93s\n"
+    "Total cost:          $1.65               $1.43\n"
+    "Queue contention:    separate            separate\n"
+    "CPU contention:      shared (same node)  shared (same node)"
 )
 pdf.body_text(
-    "These numbers vary with configuration. The key insight is that you can now study "
-    "how different workload mixes interact: changing chat-light's arrival rate from 3.0 "
-    "to 0.3 would dramatically reduce queuing for tool-heavy workflows. This is the "
-    "kind of capacity planning question the multi-workload simulator is designed to answer."
-)
-
-pdf.section_title("Timeline Visualization")
-pdf.body_text(
-    "The cumulative completions chart (Figure 3a in visualize_agentic.py) shows the "
-    "two workloads progressing at different rates. chat-light completes faster and "
-    "shows a steeper curve early on, while tool-heavy completions ramp up more gradually. "
-    "The queue depth chart (Figure 4a) shows when infrastructure becomes saturated and "
-    "workflows begin waiting for capacity."
+    "The trace visualization (visualize_trace.py) shows both agents side by side, "
+    "with color-coded bars for each phase. You can see agent-chat processing rapid "
+    "chat-light workflows while agent-tool simultaneously handles longer tool-heavy "
+    "workflows. The concurrent active workflows chart shows both agents' load curves "
+    "independently, plus the combined total that drives CPU contention."
 )
 
 
