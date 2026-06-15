@@ -1,24 +1,61 @@
 # Kubernetes & Agentic Discrete-Event Simulator
 
-A Java-based discrete-event simulator for modeling microservice and LLM-based agentic workloads on edge/cloud infrastructure. Built with **Java 21** and **Spring Boot**.
-
----
-
-## What is this?
-
-This simulator models how requests flow through a Kubernetes-like environment -- from arrival, through load balancing and queuing, to execution on shared compute nodes -- using discrete-event simulation. It captures the real performance effects of CPU contention, thread pool limits, and network delays.
-
-On top of that, it adds an **agentic layer** that simulates LLM-powered agents processing those requests. Agents reason step-by-step: they generate text, invoke external tools, delegate to other agents, or fail -- all while consuming tokens, incurring inference latency, and competing for the same underlying infrastructure. This makes it possible to study how agentic AI workloads behave under realistic infrastructure constraints, including cost, latency, queuing, and contention.
-
-The two layers compose: every agent step first goes through the infrastructure simulation (CPU scheduling, queuing) before the LLM call is dispatched. This gives you the full end-to-end picture.
+This project is a Java-based, event-driven simulator built with Spring Boot. It models the behavior of microservices deployed in a Kubernetes-like environment, simulating realistic system dynamics such as CPU time-slicing, thread pool exhaustion, request queuing, and network latency. A second simulation mode extends this foundation with LLM-based agentic workflows.
 
 ---
 
 ## Simulation Modes
 
-**V1 -- Kubernetes Microservices:** Simulates traditional request/response microservices with CPU time-slicing, pod thread pools, request queuing, round-robin load balancing, network latency, and Poisson-distributed traffic generation.
+### V1: Kubernetes Microservices Simulation
 
-**V2 -- Agentic Simulation:** Extends V1 with LLM-based agentic workflows including stochastic inference latency (Gamma-distributed TTFT/TPOT), tool invocations with error rates, agent decision loops, token-based cost tracking with budget constraints, zone-aware networking (edge/cloud/fog), and multiple concurrent workloads competing on shared infrastructure.
+Models traditional request/response microservices running on shared infrastructure. By establishing a strict event loop, explicit state tracking, and a realistic environment, this layer provides the deterministic foundation for the agentic simulation built on top.
+
+### V2: Agentic Simulation
+
+Extends V1's infrastructure model with LLM-based agentic workflows. Agents reason step-by-step: they generate text, invoke external tools, delegate to other agents, or fail -- all while consuming tokens, incurring inference latency, and competing for the same underlying infrastructure. Every agent step first goes through V1's infrastructure simulation (CPU scheduling, queuing) before the LLM call is dispatched, giving you the full end-to-end picture.
+
+---
+
+## Key Features
+
+**Event-Driven Architecture:** The simulation jumps precisely from event to event (Arrivals, Pod Finishes, Network Transfers) using a Priority Queue, ensuring high performance.
+
+**Concurrency & Time-Slicing:** Multiple requests run on the CPU simultaneously. The simulator dynamically adjusts the processing speed per job based on the number of active jobs sharing the node's CPU cores and frequency.
+
+**Thread Pools & Queuing:** Pods act like real web servers with a maximum concurrency limit. Incoming requests are placed in a waiting queue if a Pod is at capacity.
+
+**Load Balancing:** Deploys multiple replicas (Pods) per service and routes traffic using a Round-Robin strategy.
+
+**Realistic Traffic Generation:** Simulates incoming user traffic using a Poisson Process (Exponential Distribution) for random, realistic arrival gaps.
+
+**Stochastic LLM Inference (V2):** Gamma-distributed TTFT and TPOT latency modeling with per-token input/output pricing and budget constraints.
+
+**Agent Decision Loop (V2):** Agents generate text, call tools with configurable latency and error rates, delegate to sub-agents, or fail -- with token-based cost tracking throughout.
+
+**Multi-Workload Contention (V2):** Multiple concurrent workloads with independent arrival rates, token distributions, and budget constraints competing on the same infrastructure.
+
+**Zone-Aware Networking (V2):** Edge, cloud, and fog zone latency modeling for realistic distributed deployments.
+
+**Metrics & Tracing:** Automatically tracks metrics for requests and exports data to CSV files for visualization and analysis.
+
+---
+
+## Architecture Overview
+
+The simulation is broken down into two main configuration domains:
+
+**Infrastructure:** Defines the physical/virtual hardware constraints.
+- `ComputingNodes`: Represents servers with specific core counts, CPU frequencies, and network bandwidth limits.
+
+**Application:** Defines the software topology.
+- `Services`: Represents microservices with a specific workload (total instructions to execute).
+- `ServiceCalls`: Represents the communication edges between services, including the payload size (bytes) transferred over the network.
+
+**Agentic Layer (V2):** Defines the agent topology.
+- `LLM Models`: Inference profiles with latency distributions and token pricing.
+- `Tools`: External tool profiles with latency and error rates.
+- `Agent Services`: Agent definitions with LLM, tools, concurrency, and CPU cost per step.
+- `Workloads`: Traffic definitions with arrival rates, token distributions, and budgets.
 
 ---
 
@@ -26,8 +63,8 @@ The two layers compose: every agent step first goes through the infrastructure s
 
 - **Java 21+**
 - **Maven**
-- **Lombok** plugin enabled in your IDE
-- **Python 3.x** with `pandas` and `matplotlib` for visualization
+- **Lombok** plugin installed and enabled in your IDE to process the `@Data` and `@Builder` annotations.
+- **Python 3.x** with required plotting libraries:
 
 ```bash
 pip install pandas matplotlib fpdf2
@@ -35,7 +72,69 @@ pip install pandas matplotlib fpdf2
 
 ---
 
-## Getting Started
+## Configuration
+
+The simulator relies on Spring Boot properties and JSON configuration files. Ensure these are placed in your `src/main/resources` directory.
+
+### 1. `application.properties`
+
+Sets the Spring application name.
+
+```properties
+spring.application.name=Simulator
+```
+
+### 2. `infrastructure.json` (V1)
+
+Defines the cluster's nodes, including their cores, frequency, and bandwidth.
+
+```json
+{
+  "computingNodes": [
+    {
+      "node_id": 1,
+      "cores": 4,
+      "frequency": 3000000000.0,
+      "bandwidth": 1000000000.0
+    }
+  ]
+}
+```
+
+### 3. `application.json` (V1)
+
+Defines the services (instructions per request) and how they communicate (bytes transferred).
+
+```json
+{
+  "services": [
+    {
+      "service_id": 1,
+      "totalInstructions": 6000000000,
+      "nodeId": 1
+    }
+  ],
+  "serviceCalls": [
+    {
+      "callerId": 1,
+      "calleeId": 2,
+      "bytes": 200000000
+    }
+  ]
+}
+```
+
+### 4. `agentic_config.json` (V2)
+
+Defines the full agentic simulation: nodes, zone latencies, LLM model profiles, tools, agent services, simulation parameters, and workload definitions.
+
+---
+
+## How to Run
+
+You can run the simulator either through an IDE or directly from your terminal.
+
+### Option A: Running via Command Line (Maven)
 
 **V1 -- Kubernetes Simulation:**
 ```bash
@@ -47,33 +146,44 @@ mvn spring-boot:run
 mvn spring-boot:run -Dspring-boot.run.arguments=agentic
 ```
 
-In IntelliJ IDEA, add `agentic` to **Run Configuration > Program Arguments**.
+### Option B: Running in IntelliJ IDEA
+
+1. **Open the Project:** Launch IntelliJ IDEA, click Open, and select the root folder of your project.
+2. **Enable Annotation Processing:** Go to File > Settings, navigate to Build, Execution, Deployment > Compiler > Annotation Processors, and check the box for Enable annotation processing.
+3. **Locate the Main Class:** Navigate to `src/main/java/com/thesis/simulator/` and find `SimulatorApplication.java`.
+4. **Run the Application:** Right-click on `SimulatorApplication.java` and select Run. For V2, add `agentic` to **Run Configuration > Program Arguments**.
 
 ---
 
-## Configuration
+## Simulation Outputs & Visualization
 
-**V1** configs live in `src/main/resources/`:
-- `infrastructure.json` -- nodes, cores, frequency, bandwidth
-- `application.json` -- services, instructions per request, data transfer sizes
+Upon completion, the simulator generates CSV files in the root directory of your project.
 
-**V2** config lives in `src/main/resources/agentic_config.json` and covers nodes, zone latencies, LLM model profiles, tools, agent services, simulation parameters, and workload definitions.
+### V1 Output
 
----
+- `simulation_trace_k8s.csv` -- Timeline of events for every request (RequestId, Type, Name, StartTime, EndTime).
+- `queue_trace.csv` -- Size of every Pod's waiting queue at specific timestamps.
 
-## Output & Visualization
+### V2 Output
 
-**V1** produces `simulation_trace_k8s.csv` and `queue_trace.csv`. Visualize with:
+- `agentic_trajectory.csv` -- Full event trajectory with per-workflow metrics and workload tags.
+- Console summary with aggregate and per-workload statistics.
+
+### Generating Visualizations
+
+**V1:**
 ```bash
 python visualize1.py
 ```
 
-**V2** produces `agentic_trajectory.csv` and a console summary. Visualize with:
+**V2:**
 ```bash
 python visualize_agentic.py
 ```
 
 Additional experiment visualization scripts are included: `visualize_experiment1.py` through `visualize_experiment4.py`.
+
+> **Note:** Ensure you have your Python environment set up with the necessary libraries before running the scripts.
 
 ---
 
