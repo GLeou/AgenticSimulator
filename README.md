@@ -1,12 +1,12 @@
-# Kubernetes & Agentic Discrete-Event Simulator
+# Agentic Discrete-Event Simulator
 
-This project is a Java-based, event-driven simulator built with Spring Boot. It models the behavior of microservices deployed in a Kubernetes-like environment, simulating realistic system dynamics such as CPU time-slicing, thread pool exhaustion, request queuing, and network latency. A second simulation mode extends this foundation with LLM-based agentic workflows.
+This project is a Java-based, event-driven simulator built with Spring Boot. It models the behavior of microservices deployed in a distributed environment, simulating realistic system dynamics such as CPU time-slicing, thread pool exhaustion, request queuing, and network latency. A second simulation mode extends this foundation with LLM-based agentic workflows.
 
 ---
 
 ## Simulation Modes
 
-### V1: Kubernetes Microservices Simulation
+### V1: Microservices Simulation
 
 Models traditional request/response microservices running on shared infrastructure. By establishing a strict event loop, explicit state tracking, and a realistic environment, this layer provides the deterministic foundation for the agentic simulation built on top.
 
@@ -136,7 +136,7 @@ You can run the simulator either through an IDE or directly from your terminal.
 
 ### Option A: Running via Command Line (Maven)
 
-**V1 -- Kubernetes Simulation:**
+**V1 -- Microservices Simulation:**
 ```bash
 mvn spring-boot:run
 ```
